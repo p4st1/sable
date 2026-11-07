@@ -1,0 +1,12 @@
+Cython==3.3.0
+numpy==2.5.3
+pillow==12.3.0
+pygame-ce==2.5.8
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+PyOpenGL==3.1.10
+PyOpenGL-accelerate==3.1.10
+pyperclip==1.11.0
+screeninfo==0.8.1
+sswg==4.3.0
+typing_extensions==4.16.0
