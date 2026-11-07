@@ -1,0 +1,141 @@
+{
+    "format": 1,
+    "name": "New World",
+    "generator": "hills",
+    "camera": {
+        "position": [
+            -22.387762722584366,
+            -6.249583999999989,
+            -11.991345854211465
+        ],
+        "rotation": [
+            -0.4313430342749526,
+            -25.379999999999825,
+            0
+        ]
+    },
+    "flying": true,
+    "game_mode": "creative",
+    "health": 9,
+    "spawn": [
+        0.5,
+        -0.6210000000000001,
+        -39.5
+    ],
+    "inventory": [
+        [
+            "danilEfail",
+            1
+        ],
+        [
+            "cobblestone",
+            14
+        ],
+        [
+            "wooden_shovel",
+            1,
+            46
+        ],
+        [
+            "dirt",
+            19
+        ],
+        [
+            "dirt",
+            38
+        ],
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        [
+            "charcoal",
+            8
+        ],
+        null,
+        null,
+        [
+            "oak_planks",
+            16
+        ],
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    ],
+    "containers": [
+        {
+            "position": [
+                -20,
+                -1,
+                -17
+            ],
+            "kind": "furnace",
+            "slots": [
+                null,
+                null,
+                null
+            ],
+            "burn_left": 0.0,
+            "burn_total": 15.0,
+            "progress": 0.0
+        }
+    ],
+    "items": [
+        {
+            "item": [
+                "dirt",
+                1
+            ],
+            "position": [
+                -24.726708000569303,
+                -0.125,
+                -12.873744068268
+            ],
+            "velocity": [
+                -3.77178170809925e-162,
+                0.0,
+                0.0
+            ],
+            "age": 35.36800000000242,
+            "pickup_delay": 0.0
+        },
+        {
+            "item": [
+                "cobblestone",
+                1
+            ],
+            "position": [
+                -23.873267587535768,
+                0.875,
+                -12.874675700842573
+            ],
+            "velocity": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "age": 33.922000000001745,
+            "pickup_delay": 0.0
+        }
+    ]
+}

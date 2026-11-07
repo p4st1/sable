@@ -1,0 +1,87 @@
+{
+    "format": 1,
+    "name": "New World",
+    "generator": "flat",
+    "camera": {
+        "position": [
+            -11.050457991840291,
+            -3.697299999999994,
+            14.165338572377689
+        ],
+        "rotation": [
+            -1.3883430342749543,
+            5.540999999999995,
+            0
+        ]
+    },
+    "flying": true,
+    "game_mode": "creative",
+    "health": 20,
+    "spawn": [
+        0.5,
+        -1.621,
+        0.5
+    ],
+    "inventory": [
+        null,
+        [
+            "grass",
+            1
+        ],
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    ],
+    "containers": [],
+    "items": [
+        {
+            "item": [
+                "water_bucket",
+                1
+            ],
+            "position": [
+                -11.053914896064018,
+                -3.3773979543815655,
+                14.169223586138209
+            ],
+            "velocity": [
+                -0.6899854782438233,
+                3.972375737172917,
+                0.7754345807842157
+            ],
+            "age": 0.005,
+            "pickup_delay": 1.995
+        }
+    ]
+}
