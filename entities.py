@@ -4,6 +4,7 @@
 блоках. Выглядит как уменьшенный блок или выдавленная картинка, медленно
 вращается и покачивается. Ось Y направлена вниз, позиция это центр предмета.
 """
+import itertools
 import math
 import random
 
@@ -14,7 +15,7 @@ from chunk import Chunk
 from hand import ITEM_THICKNESS, flat_item_geometry
 from items import Stack, flat_texture
 from mesh import Mesh
-from water import point_in_water
+from water import LAVA, point_in_water
 from world import World
 
 TICKS = 20
@@ -30,6 +31,9 @@ HALF_SIZE = 0.125
 PICKUP_DELAY = 0.5
 THROW_DELAY = 2.0
 LIFETIME = 300.0
+
+# Номера предметов для сетевой игры: по ним клиент узнаёт тот же предмет в новом снимке.
+_item_ids = itertools.count(1)
 
 # Насколько коробка игрока расширяется, когда он подбирает предметы.
 PICKUP_REACH_SIDE = 1.0
@@ -71,13 +75,16 @@ class ItemEntity:
         self.pickup_delay = pickup_delay
         self.age = age
         self.on_ground = False
+        self.id = next(_item_ids)
 
         # Чтобы соседние предметы не вращались и не качались в такт.
         self.phase = random.uniform(0, 2 * math.pi)
 
     @property
     def expired(self):
-        return self.age >= LIFETIME or self.position[1] > VOID_Y
+        return self.age >= LIFETIME or self.position[1] > VOID_Y or self.burnt
+
+    burnt = False
 
     def update(self, world, dt):
         self.age += dt
@@ -87,6 +94,11 @@ class ItemEntity:
         vx, vy, vz = self.velocity
 
         in_water = point_in_water(world, self.position)
+
+        # Предмет, упавший в лаву, сгорает.
+        if point_in_water(world, self.position, LAVA):
+            self.burnt = True
+            return
 
         if in_water:
             # Всплывает: скорость вверх (отрицательный y) плавно догоняет FLOAT_SPEED.

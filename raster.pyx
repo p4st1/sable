@@ -9,6 +9,12 @@
 с opacity меньше 256 тексель смешивается с тем, что уже на экране, а глубину
 не пишет. Так видно и дно под водой, и вторую стенку воды за первой.
 
+Солнце, луна и звёзды рисуются сложением (additive): их чёрный фон ничего
+не меняет, а светлое светлит небо под ними. Глубину они тоже не пишут.
+
+День и ночь: у вершины может быть вторая яркость, глубокой ночью. Растеризатор
+смешивает их долей ночи night, так что меши при смене времени не перестраиваются.
+
 Свет: у каждой вершины может быть своя яркость от 0 до 1. Она интерполируется
 по треугольнику так же перспективно-корректно, как UV, и умножает цвет текселя.
 
@@ -16,16 +22,24 @@
 без участия интерпретатора Python. После правок: python build_raster.py
 """
 
-from libc.math cimport floor
+from libc.math cimport ceil, floor, sqrt
 from libc.stdint cimport int32_t, int64_t, uint8_t, uint32_t
 
 # Тексель с альфой ниже порога считается дыркой.
 # Вершины на экране хранятся с точностью до 1/SUBPIXEL пикселя: если округлять их
 # до целых пикселей, на стыке большой грани с несколькими маленькими
 # (T-образный стык) остаются щели в пиксель, сквозь которые видно небо.
+#
+# Но и 1/SUBPIXEL не спасает до конца: вершина маленькой грани на T-стыке после
+# округления оказывается чуть в стороне от ребра большой грани, и между ними
+# остаётся щель шириной в доли сабпикселя. Центр пикселя изредка в неё попадает,
+# и на рёбрах блоков мерцают точки неба. Поэтому непрозрачные треугольники
+# раздуваются на EDGE_OVERLAP сабпикселей наружу: лишнее перекрытие закроет тест
+# глубины. Полупрозрачные (вода) не раздуваются, иначе на стыках смешались бы дважды.
 cdef enum:
     ALPHA_THRESHOLD = 128
     SUBPIXEL = 256
+    EDGE_OVERLAP = 3
 
 
 cdef struct Vertex:
@@ -45,6 +59,8 @@ cdef struct Target:
     double focal
     # 256 значит непрозрачно, меньше: доля цвета текстуры в 1/256.
     int opacity
+    # Цвет текстуры прибавляется к экрану (солнце, луна, звёзды).
+    bint additive
     # Есть ли у вершин яркость. Без неё тексель пишется как есть.
     bint shaded
     # Биты альфы экрана: после затемнения их надо выставить заново.
@@ -65,6 +81,18 @@ cdef inline uint32_t blend(uint32_t source, uint32_t target, uint32_t amount) no
     cdef uint32_t even = (((source & 0x00FF00FF) * amount + (target & 0x00FF00FF) * keep) >> 8) & 0x00FF00FF
     cdef uint32_t odd = ((((source >> 8) & 0x00FF00FF) * amount + ((target >> 8) & 0x00FF00FF) * keep) >> 8) & 0x00FF00FF
     return even | (odd << 8)
+
+
+cdef inline uint32_t add_saturate(uint32_t source, uint32_t target) noexcept nogil:
+    # Сложение по байтам с насыщением: каждый канал не больше 255.
+    cdef uint32_t result = 0, total
+    cdef int shift
+
+    for shift in range(0, 32, 8):
+        total = ((source >> shift) & 0xFF) + ((target >> shift) & 0xFF)
+        result |= (255 if total > 255 else total) << shift
+
+    return result
 
 
 cdef inline uint32_t darken(uint32_t color, uint32_t amount, uint32_t alpha_mask) noexcept nogil:
@@ -172,7 +200,8 @@ cdef void fill_triangle(const Target* t, const Vertex* a, const Vertex* b, const
     cdef const uint32_t* texture = t.texture
     cdef const uint8_t* texture_alpha = t.alpha
     cdef uint32_t opacity = <uint32_t>t.opacity
-    cdef bint translucent = t.opacity < 256
+    cdef bint additive = t.additive
+    cdef bint translucent = t.opacity < 256 or additive
     cdef bint shaded = t.shaded
     cdef uint32_t alpha_mask = t.alpha_mask
     cdef uint32_t color
@@ -181,6 +210,7 @@ cdef void fill_triangle(const Target* t, const Vertex* a, const Vertex* b, const
     cdef int64_t y, x, x_start, x_end, e0, e1, e2, limit
     cdef int64_t coef[3]
     cdef int64_t rest[3]
+    cdef int64_t biased[3]
     cdef int k
     cdef double alpha, beta, gamma, iz, uz, vz, lz, w, u, v
     cdef float depth_value
@@ -188,6 +218,30 @@ cdef void fill_triangle(const Target* t, const Vertex* a, const Vertex* b, const
     cdef uint32_t* pixel_row
 
     cdef int64_t sample_y
+
+    # Функция ребра равна длине ребра, умноженной на расстояние до него, поэтому
+    # сдвиг ребра наружу на EDGE_OVERLAP сабпикселей это прибавка длина * EDGE_OVERLAP.
+    cdef int64_t bias0 = 0, bias1 = 0, bias2 = 0
+    if not translucent:
+        bias0 = <int64_t>ceil(sqrt(<double>(e0_dx * e0_dx + e0_dy * e0_dy)) * EDGE_OVERLAP)
+        bias1 = <int64_t>ceil(sqrt(<double>(e1_dx * e1_dx + e1_dy * e1_dy)) * EDGE_OVERLAP)
+        bias2 = <int64_t>ceil(sqrt(<double>(e2_dx * e2_dx + e2_dy * e2_dy)) * EDGE_OVERLAP)
+        # Рамка тоже чуть шире: иначе раздутый край обрежется по ней.
+        top = floor_div(min(ay, by, cy) - EDGE_OVERLAP, SUBPIXEL)
+        bottom = floor_div(max(ay, by, cy) + EDGE_OVERLAP, SUBPIXEL) + 1
+        left = floor_div(min(ax, bx, cx) - EDGE_OVERLAP, SUBPIXEL)
+        right = floor_div(max(ax, bx, cx) + EDGE_OVERLAP, SUBPIXEL)
+
+        if top < 0:
+            top = 0
+        if bottom > t.height:
+            bottom = t.height
+        if left < 0:
+            left = 0
+        if right > t.width - 1:
+            right = t.width - 1
+        if left > right:
+            return
 
     for y in range(top, bottom):
         # Значения рёбер в центре пикселя x = 0 этой строки и их шаг на пиксель.
@@ -201,18 +255,22 @@ cdef void fill_triangle(const Target* t, const Vertex* a, const Vertex* b, const
 
         # Границы заливки считаем точно из неравенств E(x) >= 0. Поэтому
         # внутри цикла по пикселям проверка "точка в треугольнике" не нужна.
+        # Для границ берём раздутые рёбра, а для интерполяции настоящие.
+        biased[0] = rest[0] + bias0
+        biased[1] = rest[1] + bias1
+        biased[2] = rest[2] + bias2
         x_start = left
         x_end = right
         for k in range(3):
             if coef[k] > 0:
-                limit = -floor_div(rest[k], coef[k])
+                limit = -floor_div(biased[k], coef[k])
                 if limit > x_start:
                     x_start = limit
             elif coef[k] < 0:
-                limit = floor_div(rest[k], -coef[k])
+                limit = floor_div(biased[k], -coef[k])
                 if limit < x_end:
                     x_end = limit
-            elif rest[k] < 0:
+            elif biased[k] < 0:
                 x_end = x_start - 1
 
         if x_start > x_end:
@@ -265,7 +323,10 @@ cdef void fill_triangle(const Target* t, const Vertex* a, const Vertex* b, const
 
                     color = darken(color, light, alpha_mask)
 
-                if translucent:
+                if additive:
+                    pixel_row[x] = add_saturate(color, pixel_row[x]) | alpha_mask
+
+                elif translucent:
                     pixel_row[x] = blend(color, pixel_row[x], opacity)
 
                 elif texture_alpha == NULL or texture_alpha[texel] >= ALPHA_THRESHOLD:
@@ -291,7 +352,10 @@ def draw_mesh(
     int opacity=256,
     const float[::1] shades=None,
     double brightness=1.0,
-    uint32_t alpha_mask=0
+    uint32_t alpha_mask=0,
+    const float[::1] night_shades=None,
+    double night=0.0,
+    bint additive=False
 ):
     """Рисует меш. points уже в пространстве камеры. Возвращает число треугольников.
 
@@ -299,7 +363,12 @@ def draw_mesh(
     opacity: меньше 256 для полупрозрачного меша (глубину он не пишет).
     shades: яркость каждой точки от 0 до 1 или None. brightness: множитель всего
     меша, например для предмета в тёмной пещере. alpha_mask: биты альфы экрана.
+    night_shades: яркость точек глубокой ночью, night: доля ночи от 0 до 1.
+    additive: цвет прибавляется к экрану, глубина не проверяется на запись.
     """
+    if night_shades is not None and (shades is None or night_shades.shape[0] != points.shape[0]):
+        raise ValueError("night_shades needs shades and one value per point")
+
     if shades is not None and shades.shape[0] != points.shape[0]:
         raise ValueError("shades must have one value per point")
 
@@ -324,10 +393,12 @@ def draw_mesh(
     target.texture_height = texture.shape[0]
     target.focal = focal
     target.opacity = max(0, min(256, opacity))
+    target.additive = additive
     target.shaded = shades is not None or brightness != 1.0
     target.alpha_mask = alpha_mask
 
     cdef bint per_point = shades is not None
+    cdef bint per_night = night_shades is not None and night != 0.0
 
     cdef Py_ssize_t i, count = triangles.shape[0]
     cdef int k, n, inside, drawn = 0
@@ -349,7 +420,12 @@ def draw_mesh(
                 tri[k].z = points[index, 2]
                 tri[k].u = uvs[i, k, 0]
                 tri[k].v = uvs[i, k, 1]
-                tri[k].l = shades[index] * brightness if per_point else brightness
+                if per_night:
+                    tri[k].l = (shades[index] + (night_shades[index] - shades[index]) * night) * brightness
+                elif per_point:
+                    tri[k].l = shades[index] * brightness
+                else:
+                    tri[k].l = brightness
 
                 if tri[k].z >= near:
                     inside += 1

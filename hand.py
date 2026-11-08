@@ -12,7 +12,7 @@ import pygame
 
 from block import Block
 from chunk import Chunk
-from items import flat_texture
+from items import TOOLS, flat_texture
 from mesh import Mesh
 from world import World
 
@@ -60,6 +60,17 @@ SLEEVE = (54, 92, 126)
 SLEEVE_ROWS = 4
 
 SWING_TIME = 0.3
+
+# Взмах инструментом как в оригинале: кисть уходит к центру экрана и вперёд,
+# а сам инструмент поворачивается головкой к прицелу (на 80 градусов вокруг
+# поперечной оси, плюс по 20 вокруг двух других). Сдвиги в блоках, углы в градусах.
+TOOL_SWING_SHIFT = (-0.4, 0.2, -0.2)
+TOOL_SWING_TURNS = (20, 20, 80)
+
+# Удар пустой рукой так же, как в оригинале: кулак выбрасывается к центру и
+# вперёд, рука поворачивается на 70 градусов вокруг вертикали и на 20 вбок.
+ARM_SWING_SHIFT = (-0.3, 0.4, -0.4)
+ARM_SWING_TURNS = (70, 20)
 EQUIP_TIME = 0.15
 EQUIP_DROP = 0.6
 
@@ -227,9 +238,9 @@ def to_camera(matrix, point):
     return (x, -y, -z)
 
 
-def arm_view_matrix():
+def arm_view_matrix(steps=ARM_VIEW_STEPS):
     """Из пикселей модели руки в пространство вида (y вверх, взгляд в -z)."""
-    matrix = view_matrix(ARM_VIEW_STEPS)
+    matrix = view_matrix(steps)
 
     # Крепление к телу и перевод пикселей в блоки.
     pivot = np.identity(4)
@@ -477,17 +488,109 @@ class Hand:
 
         return turn, np.array((x, y, z), dtype=np.float32)
 
+    def swing_phases(self):
+        """Доля взмаха и три кривые оригинала: быстрая, дуга и поздняя."""
+        progress = 0.0 if self.swing_time is None else self.swing_time / SWING_TIME
+
+        return (
+            math.sin(math.sqrt(progress) * math.pi),
+            math.sin(progress * math.pi),
+            math.sin(progress * progress * math.pi),
+            math.sin(math.sqrt(progress) * 2 * math.pi),
+        )
+
+    def arm_points(self):
+        """Вершины руки в пикселях модели: их каждый кадр ставим заново со взмахом."""
+        key = ("local", None)
+
+        if key not in self.meshes:
+            mesh, points = self.get_meshes(None)[0]
+            view = np.column_stack((points * np.array((1.0, -1.0, -1.0)), np.ones(len(points))))
+            self.meshes[key] = view @ np.linalg.inv(arm_view_matrix()).T
+
+        return self.meshes[key]
+
+    def arm_matrix(self):
+        fast, arc, late, bounce = self.swing_phases()
+        shift_x, shift_y, shift_z = ARM_SWING_SHIFT
+        turn_y, turn_z = ARM_SWING_TURNS
+
+        steps = (
+            ("move", (shift_x * fast, shift_y * bounce, shift_z * arc)),
+            *ARM_VIEW_STEPS[:2],
+            ("turn", "y", fast * turn_y),
+            ("turn", "z", -late * turn_z),
+            *ARM_VIEW_STEPS[2:],
+        )
+
+        return arm_view_matrix(steps)
+
+    def bob_shift(self):
+        """Покачивание при ходьбе и подъём нового предмета, в координатах камеры."""
+        return np.array((
+            BOB_X * math.sin(self.bob_phase) * self.bob_amount,
+            BOB_Y * abs(math.cos(self.bob_phase)) * self.bob_amount + EQUIP_DROP * self.equip,
+            0.0,
+        ))
+
+    def tool_points(self, block_type):
+        """Вершины инструмента в квадрате картинки: их каждый кадр ставим заново."""
+        key = ("local", block_type)
+
+        if key not in self.meshes:
+            self.get_meshes(block_type)
+            points, _, _ = flat_item_geometry()
+            self.meshes[key] = np.array([(*point, 1.0) for point in points], dtype=np.float64)
+
+        return self.meshes[key]
+
+    def tool_matrix(self):
+        """Положение инструмента в руке в этом кадре: обычное плюс взмах, как в оригинале."""
+        fast, arc, late, bounce = self.swing_phases()
+
+        shift_x, shift_y, shift_z = TOOL_SWING_SHIFT
+        turn_y, turn_z, turn_x = TOOL_SWING_TURNS
+
+        steps = (
+            ("move", (shift_x * fast, shift_y * bounce, shift_z * arc)),
+            *ITEM_VIEW_STEPS[:2],
+            ("turn", "y", -late * turn_y),
+            ("turn", "z", -fast * turn_z),
+            ("turn", "x", -fast * turn_x),
+            *ITEM_VIEW_STEPS[2:],
+        )
+
+        return view_matrix(steps)
+
     def render(self, block_type, screen, brightness=1.0):
         """brightness: свет там, где стоит игрок. В темноте и рука тёмная."""
-        turn, shift = self.pose()
-
         # Рука и плоские предметы заданы в координатах камеры, блоки — от точки хвата.
         absolute = block_type is None or flat_texture(block_type) is not None
         anchor = self.engine.hand_offset(screen) if absolute else 0
 
-        meshes = [
-            (mesh, np.ascontiguousarray((points - anchor) @ turn.T + shift, dtype=np.float32))
-            for mesh, points in self.get_meshes(block_type)
-        ]
+        if block_type in TOOLS:
+            # Инструмент ставится в руку заново каждый кадр со взмахом внутри
+            # цепочки преобразований, как в оригинале. Потом покачивание и подъём.
+            local = self.tool_points(block_type)
+            view = local @ self.tool_matrix().T
+            # Из пространства вида (y вверх, взгляд в -z) в камеру (y вниз, z вперёд).
+            camera = view[:, :3] * np.array((1.0, -1.0, -1.0))
+            mesh, _ = self.get_meshes(block_type)[0]
+            meshes = [(mesh, np.ascontiguousarray(camera - anchor + self.bob_shift(), dtype=np.float32))]
+
+        elif block_type is None:
+            # Пустая рука: тоже заново каждый кадр со взмахом в цепочке, как у инструмента.
+            view = self.arm_points() @ self.arm_matrix().T
+            camera = view[:, :3] * np.array((1.0, -1.0, -1.0))
+
+            mesh, _ = self.get_meshes(None)[0]
+            meshes = [(mesh, np.ascontiguousarray(camera - anchor + self.bob_shift(), dtype=np.float32))]
+        else:
+            turn, shift = self.pose()
+
+            meshes = [
+                (mesh, np.ascontiguousarray((points - anchor) @ turn.T + shift, dtype=np.float32))
+                for mesh, points in self.get_meshes(block_type)
+            ]
 
         self.engine.render_held_block(meshes, screen, brightness)

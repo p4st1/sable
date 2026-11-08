@@ -286,12 +286,15 @@ def greedy_quads(
     const int32_t[:, ::1] face_tex,
     const double[::1] brightness,
     const double[::1] face_shade,
-    bint smooth
+    bint smooth,
+    const double[::1] night_brightness=None
 ):
-    """Прямоугольники граней и яркости их углов.
+    """Прямоугольники граней и яркости их углов днём и ночью.
 
     Возвращает массив (n, 7) из face, fixed, a, b, size_a, size_b, texture и
-    массив (n, 4) uint8 с яркостями углов (0,0), (1,0), (1,1), (0,1) по a и b.
+    массив (n, 4) uint8 с яркостями углов (0,0), (1,0), (1,1), (0,1) по a и b,
+    и такой же массив яркостей ночью. night_brightness: таблица яркостей байта
+    света глубокой ночью (небо темнее). Без неё ночные яркости равны дневным.
     light: свет той же формы, что ids, как его отдаёт compute_light. brightness:
     яркость каждого значения байта света (256 штук), face_shade: множитель
     стороны (верх светлее боков, низ темнее всех).
@@ -306,6 +309,11 @@ def greedy_quads(
     if brightness.shape[0] != 256:
         raise ValueError("brightness must have a value for every light byte")
 
+    if night_brightness is None:
+        night_brightness = brightness
+    elif night_brightness.shape[0] != 256:
+        raise ValueError("night_brightness must have a value for every light byte")
+
     cdef int size_x = ids.shape[0] - 2
     cdef int size_y = ids.shape[1] - 2
     cdef int size_z = ids.shape[2] - 2
@@ -313,22 +321,26 @@ def greedy_quads(
     cdef int largest = max(size_x, size_z) * max(size_x, size_y, size_z)
     mask_array = np.empty(largest, dtype=np.int32)
     shade_array = np.empty(largest, dtype=np.uint32)
+    night_array = np.empty(largest, dtype=np.uint32)
     used_array = np.empty(largest, dtype=np.uint8)
     cdef int32_t[::1] mask = mask_array
     cdef uint32_t[::1] shades = shade_array
+    cdef uint32_t[::1] night_shades = night_array
     cdef uint8_t[::1] used = used_array
 
     capacity = 1024
     result = np.empty((capacity, FIELDS), dtype=np.int32)
     corners = np.empty((capacity, 4), dtype=np.uint8)
+    night_corners = np.empty((capacity, 4), dtype=np.uint8)
     cdef int32_t[:, ::1] out = result
     cdef uint8_t[:, ::1] out_corners = corners
+    cdef uint8_t[:, ::1] out_night = night_corners
     cdef int count = 0
 
     cdef int face, fixed, slices, size_a, size_b
     cdef int a, b, da, db, width, height, texture, x, y, z, cell, other
     cdef int dx, dy, dz, ax, ay, az, bx, by, bz
-    cdef uint32_t packed
+    cdef uint32_t packed, night_packed
     cdef bint expand, any_face
 
     for face in range(6):
@@ -381,6 +393,11 @@ def greedy_quads(
                             x + 1 + dx, y + 1 + dy, z + 1 + dz,
                             ax, ay, az, bx, by, bz, smooth
                         )
+                        night_shades[cell] = corner_shades(
+                            ids, light, opaque, &night_brightness[0], face_shade[face],
+                            x + 1 + dx, y + 1 + dy, z + 1 + dz,
+                            ax, ay, az, bx, by, bz, smooth
+                        )
 
             if not any_face:
                 continue
@@ -396,15 +413,17 @@ def greedy_quads(
                         continue
 
                     packed = shades[cell]
+                    night_packed = night_shades[cell]
                     width = 1
                     height = 1
 
                     # Клетку с разной яркостью углов склеивать нельзя: свет внутри потеряется.
-                    if uniform(packed):
+                    # Яркость должна совпадать и днём, и ночью.
+                    if uniform(packed) and uniform(night_packed):
                         while a + width < size_a:
                             other = (a + width) * size_b + b
 
-                            if used[other] or mask[other] != texture or shades[other] != packed:
+                            if used[other] or mask[other] != texture or shades[other] != packed or night_shades[other] != night_packed:
                                 break
 
                             width += 1
@@ -415,7 +434,7 @@ def greedy_quads(
                             for da in range(width):
                                 other = (a + da) * size_b + b + height
 
-                                if used[other] or mask[other] != texture or shades[other] != packed:
+                                if used[other] or mask[other] != texture or shades[other] != packed or night_shades[other] != night_packed:
                                     expand = False
                                     break
 
@@ -432,8 +451,10 @@ def greedy_quads(
                         capacity *= 2
                         result = np.resize(result, (capacity, FIELDS))
                         corners = np.resize(corners, (capacity, 4))
+                        night_corners = np.resize(night_corners, (capacity, 4))
                         out = result
                         out_corners = corners
+                        out_night = night_corners
 
                     out[count, 0] = face
                     out[count, 1] = fixed
@@ -447,6 +468,10 @@ def greedy_quads(
                     out_corners[count, 1] = (packed >> 8) & 0xFF
                     out_corners[count, 2] = (packed >> 16) & 0xFF
                     out_corners[count, 3] = (packed >> 24) & 0xFF
+                    out_night[count, 0] = night_packed & 0xFF
+                    out_night[count, 1] = (night_packed >> 8) & 0xFF
+                    out_night[count, 2] = (night_packed >> 16) & 0xFF
+                    out_night[count, 3] = (night_packed >> 24) & 0xFF
                     count += 1
 
-    return result[:count], corners[:count]
+    return result[:count], corners[:count], night_corners[:count]

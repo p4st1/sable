@@ -1,93 +1,139 @@
 {
     "format": 1,
     "name": "New World",
-    "generator": "hills",
+    "generator": "default",
     "camera": {
         "position": [
-            -22.387762722584366,
-            -6.249583999999989,
-            -11.991345854211465
+            37.155917945642706,
+            -7.621,
+            -65.19352429332478
         ],
         "rotation": [
-            -0.4313430342749526,
-            -25.379999999999825,
+            -0.6743430342749508,
+            -26.85300000000011,
             0
         ]
     },
     "flying": true,
+    "seed": 2784497007487823290,
     "game_mode": "creative",
-    "health": 9,
+    "health": 20,
     "spawn": [
         0.5,
-        -0.6210000000000001,
-        -39.5
+        -9.621,
+        0.5
     ],
     "inventory": [
         [
-            "danilEfail",
-            1
-        ],
-        [
-            "cobblestone",
-            14
-        ],
-        [
-            "wooden_shovel",
+            "stone_sword",
             1,
-            46
-        ],
-        [
-            "dirt",
-            19
-        ],
-        [
-            "dirt",
-            38
-        ],
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        [
-            "charcoal",
-            8
-        ],
-        null,
-        null,
-        [
-            "oak_planks",
             16
         ],
+        [
+            "iron_pickaxe",
+            1,
+            6
+        ],
+        [
+            "stone_shovel",
+            1,
+            71
+        ],
+        [
+            "stone_axe",
+            1,
+            7
+        ],
         null,
         null,
         null,
         null,
         null,
         null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        [
+            "stone_pickaxe",
+            1,
+            36
+        ],
+        null,
+        null,
+        [
+            "porkchop",
+            1
+        ],
         null,
         null,
         null,
         null
     ],
+    "armor": [
+        [
+            "leather_helmet",
+            1,
+            49
+        ],
+        [
+            "leather_chestplate",
+            1,
+            49
+        ],
+        [
+            "leather_leggings",
+            1,
+            49
+        ],
+        [
+            "leather_boots",
+            1,
+            49
+        ]
+    ],
     "containers": [
         {
             "position": [
-                -20,
-                -1,
-                -17
+                24,
+                -8,
+                -71
+            ],
+            "kind": "furnace",
+            "slots": [
+                null,
+                [
+                    "charcoal",
+                    1
+                ],
+                [
+                    "iron_ingot",
+                    4
+                ]
+            ],
+            "burn_left": 0.0,
+            "burn_total": 80.0,
+            "progress": 0.0
+        },
+        {
+            "position": [
+                25,
+                -8,
+                -71
             ],
             "kind": "furnace",
             "slots": [
@@ -96,46 +142,540 @@
                 null
             ],
             "burn_left": 0.0,
-            "burn_total": 15.0,
+            "burn_total": 80.0,
+            "progress": 0.0
+        },
+        {
+            "position": [
+                30,
+                -5,
+                -68
+            ],
+            "kind": "chest",
+            "slots": [
+                [
+                    "rotten_flesh",
+                    3
+                ],
+                [
+                    "bone",
+                    9
+                ],
+                [
+                    "oak_planks",
+                    3
+                ],
+                [
+                    "sand",
+                    14
+                ],
+                [
+                    "white_wool",
+                    2
+                ],
+                [
+                    "stick",
+                    2
+                ],
+                [
+                    "string",
+                    2
+                ],
+                [
+                    "dirt",
+                    60
+                ],
+                [
+                    "cobblestone",
+                    16
+                ],
+                [
+                    "oak_log",
+                    1
+                ],
+                [
+                    "sandstone",
+                    6
+                ],
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            ]
+        },
+        {
+            "position": [
+                29,
+                -6,
+                -68
+            ],
+            "kind": "furnace",
+            "slots": [
+                null,
+                null,
+                [
+                    "iron_ingot",
+                    2
+                ]
+            ],
+            "burn_left": 0.0,
+            "burn_total": 80.0,
             "progress": 0.0
         }
     ],
-    "items": [
+    "items": [],
+    "mobs": [
         {
-            "item": [
-                "dirt",
-                1
-            ],
+            "kind": "sheep",
             "position": [
-                -24.726708000569303,
-                -0.125,
-                -12.873744068268
+                106.9037,
+                -1.001,
+                -70.8977
             ],
-            "velocity": [
-                -3.77178170809925e-162,
-                0.0,
-                0.0
-            ],
-            "age": 35.36800000000242,
-            "pickup_delay": 0.0
+            "yaw": 58.4845,
+            "health": 8
         },
         {
-            "item": [
-                "cobblestone",
-                1
-            ],
+            "kind": "pig",
             "position": [
-                -23.873267587535768,
-                0.875,
-                -12.874675700842573
+                28.5003,
+                -7.001,
+                23.5702
             ],
-            "velocity": [
-                0.0,
-                0.0,
-                0.0
+            "yaw": 36.9253,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                30.9553,
+                0.5522,
+                -158.8778
             ],
-            "age": 33.922000000001745,
-            "pickup_delay": 0.0
+            "yaw": 1.3377,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                51.0481,
+                0.5588,
+                -127.1029
+            ],
+            "yaw": 36.2549,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                64.1745,
+                -5.001,
+                -13.5278
+            ],
+            "yaw": -39.5045,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                69.1184,
+                -5.001,
+                -68.462
+            ],
+            "yaw": 4.8707,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                138.2389,
+                -21.001,
+                -26.2628
+            ],
+            "yaw": -7.7629,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                89.5297,
+                -5.001,
+                -15.1083
+            ],
+            "yaw": 12.1375,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                131.1405,
+                -7.001,
+                2.2083
+            ],
+            "yaw": 12.5891,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                18.3599,
+                0.5471,
+                -142.5431
+            ],
+            "yaw": 23.4872,
+            "health": 10
+        },
+        {
+            "kind": "pig",
+            "position": [
+                9.2121,
+                0.5491,
+                -159.0367
+            ],
+            "yaw": -7.3309,
+            "health": 10
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -72.0495,
+                -8.001,
+                -137.3784
+            ],
+            "yaw": -27.2497,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -76.7409,
+                -5.001,
+                -103.1124
+            ],
+            "yaw": 24.7577,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -50.5613,
+                -5.001,
+                -116.7828
+            ],
+            "yaw": -22.0036,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                143.5712,
+                -14.001,
+                -10.451
+            ],
+            "yaw": -5.6919,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                151.0154,
+                -16.001,
+                -14.2098
+            ],
+            "yaw": 3.2486,
+            "health": 8
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                32.6294,
+                7.999,
+                -83.301
+            ],
+            "yaw": -13.067,
+            "health": 20
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                31.481,
+                7.999,
+                -83.627
+            ],
+            "yaw": 16.7354,
+            "health": 20
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                31.3656,
+                1.999,
+                -52.699
+            ],
+            "yaw": 3.1806,
+            "health": 20
+        },
+        {
+            "kind": "spider",
+            "position": [
+                42.0091,
+                5.999,
+                -42.8139
+            ],
+            "yaw": 4.4405,
+            "health": 16
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                15.5791,
+                4.999,
+                -58.699
+            ],
+            "yaw": -16.4775,
+            "health": 20
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                40.1483,
+                3.999,
+                -47.3101
+            ],
+            "yaw": -4.3913,
+            "health": 20
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                17.699,
+                3.999,
+                -56.699
+            ],
+            "yaw": -9.5368,
+            "health": 20
+        },
+        {
+            "kind": "spider",
+            "position": [
+                21.5279,
+                15.999,
+                -56.9816
+            ],
+            "yaw": -3.8817,
+            "health": 16
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                18.0185,
+                14.999,
+                -68.7039
+            ],
+            "yaw": 0.0892,
+            "health": 20
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                38.5,
+                2.999,
+                -95.5
+            ],
+            "yaw": 2.9636,
+            "health": 20
         }
-    ]
+    ],
+    "time": 79211.64,
+    "bed": [
+        28,
+        -5,
+        -68
+    ],
+    "game_rules": {
+        "keepInventory": false
+    },
+    "spawned_chunks": [
+        [
+            -8,
+            -2
+        ],
+        [
+            -8,
+            0
+        ],
+        [
+            -8,
+            1
+        ],
+        [
+            -7,
+            -6
+        ],
+        [
+            -7,
+            -5
+        ],
+        [
+            -7,
+            -4
+        ],
+        [
+            -6,
+            -6
+        ],
+        [
+            -6,
+            -4
+        ],
+        [
+            -6,
+            1
+        ],
+        [
+            -5,
+            -9
+        ],
+        [
+            -5,
+            -2
+        ],
+        [
+            -4,
+            5
+        ],
+        [
+            -1,
+            -12
+        ],
+        [
+            -1,
+            0
+        ],
+        [
+            -1,
+            3
+        ],
+        [
+            -1,
+            6
+        ],
+        [
+            0,
+            -9
+        ],
+        [
+            0,
+            -2
+        ],
+        [
+            0,
+            2
+        ],
+        [
+            1,
+            -6
+        ],
+        [
+            1,
+            1
+        ],
+        [
+            1,
+            2
+        ],
+        [
+            2,
+            -12
+        ],
+        [
+            2,
+            -10
+        ],
+        [
+            2,
+            -4
+        ],
+        [
+            2,
+            3
+        ],
+        [
+            3,
+            -11
+        ],
+        [
+            3,
+            2
+        ],
+        [
+            4,
+            -4
+        ],
+        [
+            4,
+            3
+        ],
+        [
+            5,
+            -10
+        ],
+        [
+            5,
+            -9
+        ],
+        [
+            5,
+            -4
+        ],
+        [
+            5,
+            -1
+        ],
+        [
+            5,
+            2
+        ],
+        [
+            5,
+            5
+        ],
+        [
+            6,
+            3
+        ],
+        [
+            7,
+            -8
+        ],
+        [
+            7,
+            -2
+        ],
+        [
+            7,
+            2
+        ],
+        [
+            8,
+            0
+        ],
+        [
+            9,
+            -1
+        ]
+    ],
+    "players": {}
 }

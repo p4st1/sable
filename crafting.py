@@ -6,6 +6,8 @@
 from collections import Counter
 from typing import NamedTuple
 
+import armor
+
 
 class Shaped(NamedTuple):
     pattern: tuple
@@ -48,9 +50,21 @@ RECIPES = (
     Shaped(("##", "##", "##"), {"#": "oak_planks"}, "oak_door", 3),
     Shaped(("##", "##", "##"), {"#": "spruce_planks"}, "spruce_door", 3),
     Shaped(("##", "##"), {"#": "sand"}, "sandstone"),
+    Shaped(("###", "PPP"), {"#": "white_wool", "P": PLANKS}, "bed"),
+    Shaped((" #S", "# S", " #S"), {"#": "stick", "S": "string"}, "bow"),
+    Shaped(("I ", " F"), {"I": "iron_ingot", "F": "flint"}, "flint_and_steel"),
     Shaped(("#", "|"), {"#": frozenset({"coal", "charcoal"}), "|": "stick"}, "torch", 4),
     *tools(PLANKS, "wooden"),
     *tools(STONES, "stone"),
+    *tools("iron_ingot", "iron"),
+    *tools("gold_ingot", "golden"),
+    *tools("diamond", "diamond"),
+    # Броня: шлем, нагрудник, поножи и ботинки из каждого материала.
+    *(
+        Shaped(shape, {"#": info.ingredient}, f"{material}_{slot}")
+        for material, info in armor.MATERIALS.items()
+        for slot, shape in armor.recipe_shapes().items()
+    ),
 )
 
 

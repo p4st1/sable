@@ -15,9 +15,12 @@ import pygame
 from containers import FUEL, FUEL_SLOT, INPUT, OUTPUT, SMELT_TIME, SMELTING
 from crafting import find_recipe
 from gui import PANEL_TITLE
+import armor
 from items import ALL_ITEMS, HOTBAR_SIZE, Stack, item_name, max_stack
+from textures import load_surface
 
 WIDTH = 176
+FIGURE_BACKGROUND = (40, 40, 40)
 SLOT = 18
 BIG_SLOT = 26
 
@@ -44,6 +47,14 @@ class Slot:
 
     def can_place(self, stack):
         return not self.output and (self.accepts is None or self.accepts(stack.type))
+
+
+class ArmorSlot(Slot):
+    """Ячейка брони: принимает только свою часть, пустая показывает силуэт."""
+
+    def __init__(self, items, index, x, y):
+        super().__init__(items, index, x, y, accepts=lambda item: item in armor.ARMOR and armor.ARMOR[item].slot == index)
+        self.placeholder = f"assets/minecraft/textures/item/empty_armor_slot_{armor.SLOTS[index]}.png"
 
 
 class ResultSlot:
@@ -469,6 +480,9 @@ class ContainerScreen:
                 self.show_counts or isinstance(slot, ResultSlot)
             )
 
+            if isinstance(slot, ArmorSlot) and slot.get() is None:
+                self.draw_placeholder(screen, left + slot.x, top + slot.y, slot.placeholder)
+
         if self.cursor is not None:
             icon = gui.get_block_icon(self.cursor.type)
             rect = icon.get_rect(center=mouse)
@@ -482,6 +496,22 @@ class ContainerScreen:
 
     def render_extras(self, screen, left, top):
         pass
+
+    def draw_placeholder(self, screen, x, y, path):
+        """Силуэт пустой ячейки брони из ресурс-пака, если он там есть."""
+        gui = self.game.gui
+        key = ('placeholder', path)
+
+        if key not in gui.sprites:
+            try:
+                icon = load_surface(path).convert_alpha()
+            except (FileNotFoundError, pygame.error):
+                icon = None
+
+            gui.sprites[key] = None if icon is None else pygame.transform.scale(icon, (16 * gui.scale, 16 * gui.scale))
+
+        if gui.sprites[key] is not None:
+            screen.blit(gui.sprites[key], gui.to_pixels((x + 1, y + 1, 16, 16)).topleft)
 
 
 class CraftingGrid:
@@ -519,18 +549,57 @@ class CraftingGrid:
 
 
 class InventoryScreen(CraftingGrid, ContainerScreen):
-    """Инвентарь выживания: сетка 2x2 справа сверху и все 36 ячеек."""
+    """Инвентарь выживания: броня слева, фигурка игрока, сетка 2x2 справа сверху и все 36 ячеек."""
     title = "Crafting"
     title_x = 97
     inventory_label = False
 
+    # Окошко с фигуркой между бронёй и крафтом, в единицах интерфейса.
+    FIGURE = (26, 8, 49, 70)
+
     def __init__(self, game):
         super().__init__(game)
         self.setup_grid(2, 97, 17, 152, 26, SLOT)
+
+        self.armor_slots = [ArmorSlot(self.inventory.armor, index, 7, 7 + index * SLOT) for index in range(len(armor.SLOTS))]
+        self.slots += self.armor_slots
         self.add_player_slots()
 
+    def quick_move_targets(self, slot):
+        # Броня из инвентаря по Shift+клику надевается, если её место свободно.
+        if slot in self.player_slots:
+            stack = slot.get()
+
+            if stack.type in armor.ARMOR:
+                target = self.armor_slots[armor.ARMOR[stack.type].slot]
+
+                if target.get() is None:
+                    return [target]
+
+        return super().quick_move_targets(slot)
+
     def render_extras(self, screen, left, top):
-        self.game.gui.draw_arrow(screen, left + 136, top + 28)
+        gui = self.game.gui
+        gui.draw_arrow(screen, left + 136, top + 28)
+
+        x, y, width, height = self.FIGURE
+        gui.fill(screen, (left + x - 1, top + y - 1, width + 2, height + 2), (0, 0, 0))
+        gui.fill(screen, (left + x, top + y, width, height), FIGURE_BACKGROUND)
+
+        rect = gui.to_pixels((left + x, top + y, width, height))
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        # Глаза фигурки примерно на пятой части высоты окошка.
+        eyes = (rect.centerx, rect.y + rect.height * 0.2)
+
+        image = self.game.figure.render(
+            self.game.player_skin,
+            self.inventory.armor,
+            rect.width,
+            rect.height,
+            (mouse_x - eyes[0]) / gui.scale,
+            (mouse_y - eyes[1]) / gui.scale,
+        )
+        screen.blit(image, rect.topleft)
 
 
 class CraftingScreen(CraftingGrid, ContainerScreen):

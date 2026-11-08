@@ -8,6 +8,9 @@ from typing import NamedTuple
 
 from block import BLOCKS
 from block import REMOVED, TORCHES
+import armor
+import plants
+from bed import BED_ICON, BEDS
 from door import DOORS, is_door
 
 ITEM_TEXTURES = 'assets/minecraft/textures/item/'
@@ -47,6 +50,20 @@ NAMES = {
     "stone_axe": "Stone Axe",
     "stone_shovel": "Stone Shovel",
     "stone_sword": "Stone Sword",
+    "iron_pickaxe": "Iron Pickaxe",
+    "iron_axe": "Iron Axe",
+    "iron_shovel": "Iron Shovel",
+    "iron_sword": "Iron Sword",
+    "golden_pickaxe": "Golden Pickaxe",
+    "golden_axe": "Golden Axe",
+    "golden_shovel": "Golden Shovel",
+    "golden_sword": "Golden Sword",
+    "diamond_pickaxe": "Diamond Pickaxe",
+    "diamond_axe": "Diamond Axe",
+    "diamond_shovel": "Diamond Shovel",
+    "diamond_sword": "Diamond Sword",
+    **{piece: armor.item_name(piece) for piece in armor.ARMOR},
+    "leather": "Leather",
     "bucket": "Bucket",
     "water_bucket": "Water Bucket",
 
@@ -75,6 +92,22 @@ NAMES = {
     "diamond": "Diamond",
     "torch": "Torch",
     "glowstone": "Glowstone",
+
+    # С животных и мобов.
+    "rotten_flesh": "Rotten Flesh",
+    "bone": "Bone",
+    "arrow": "Arrow",
+    "string": "String",
+    "flint": "Flint",
+    "obsidian": "Obsidian",
+    "lava_bucket": "Lava Bucket",
+    "flint_and_steel": "Flint and Steel",
+    "bow": "Bow",
+    "beef": "Raw Beef",
+    "cooked_beef": "Steak",
+    "white_wool": "White Wool",
+    "bed": "Bed",
+    **plants.NAMES,
 }
 
 # Порядок в палитре творческого режима. Первые девять лежат в хотбаре нового мира.
@@ -83,6 +116,17 @@ ALL_ITEMS = tuple(NAMES)
 # Предметы, которые нельзя поставить: в руке и в инвентаре они плоские картинки.
 FLAT_ITEMS = {
     "stick": "stick.png",
+    "leather": "leather.png",
+    "bone": "bone.png",
+    "arrow": "arrow.png",
+    "string": "string.png",
+    "flint": "flint.png",
+    "flint_and_steel": "flint_and_steel.png",
+    "bow": "bow.png",
+    # Натянутый лук в руке: три стадии, в инвентаре таких предметов нет.
+    "bow_pulling_0": "bow_pulling_0.png",
+    "bow_pulling_1": "bow_pulling_1.png",
+    "bow_pulling_2": "bow_pulling_2.png",
     "charcoal": "charcoal.png",
     "coal": "coal.png",
     "iron_ingot": "iron_ingot.png",
@@ -101,6 +145,9 @@ FOODS = {
     "cooked_porkchop": 8,
     "cookie": 1,
     "golden_apple": 20,
+    "rotten_flesh": 4,
+    "beef": 3,
+    "cooked_beef": 8,
 }
 
 for _food in FOODS:
@@ -114,34 +161,50 @@ class Tool(NamedTuple):
     speed: float
     # Сколько раз можно воспользоваться, прежде чем инструмент сломается.
     uses: int
+    # Уровень добычи: 0 дерево и золото, 1 камень, 2 железо, 3 алмаз.
+    # Железной руде нужен каменный, золотой и алмазной железный.
+    level: int = 0
 
 
-# Как в оригинале: деревянные вдвое быстрее руки и служат 60 раз,
-# каменные вчетверо быстрее и служат 132 раза.
-TOOLS = {
-    "wooden_pickaxe": Tool("pickaxe", 2.0, 60),
-    "wooden_axe": Tool("axe", 2.0, 60),
-    "wooden_shovel": Tool("shovel", 2.0, 60),
-    "wooden_sword": Tool("sword", 1.5, 60),
-    "stone_pickaxe": Tool("pickaxe", 4.0, 132),
-    "stone_axe": Tool("axe", 4.0, 132),
-    "stone_shovel": Tool("shovel", 4.0, 132),
-    "stone_sword": Tool("sword", 1.5, 132),
+# Материалы как в оригинале: во сколько раз быстрее руки, сколько служат и уровень.
+# Золото самое быстрое, но ломается почти сразу и добывает не больше дерева.
+TOOL_MATERIALS = {
+    "wooden": (2.0, 60, 0),
+    "stone": (4.0, 132, 1),
+    "iron": (6.0, 251, 2),
+    "golden": (12.0, 33, 0),
+    "diamond": (8.0, 1562, 3),
 }
+
+# Меч ломает листву и паутину в полтора раза быстрее, какой бы ни был материал.
+SWORD_SPEED = 1.5
+
+TOOLS = {}
+
+for _material, (_speed, _uses, _level) in TOOL_MATERIALS.items():
+    for _kind in ("pickaxe", "axe", "shovel", "sword"):
+        TOOLS[f"{_material}_{_kind}"] = Tool(_kind, SWORD_SPEED if _kind == "sword" else _speed, _uses, _level)
 
 for _tool in TOOLS:
     FLAT_ITEMS[_tool] = _tool + ".png"
 
 # Пустое ведро черпает воду, полное выливает. Пустые складываются по 16, полные нет.
-BUCKETS = {"bucket": 16, "water_bucket": 1}
+BUCKETS = {"bucket": 16, "water_bucket": 1, "lava_bucket": 1}
 
 for _bucket in BUCKETS:
     FLAT_ITEMS[_bucket] = _bucket + ".png"
 
 
+# Лук служит столько выстрелов, огниво столько поджогов, как в 1.0.
+BOW_USES = 385
+FLINT_AND_STEEL_USES = 65
+# Гравий вместо себя иногда роняет кремень.
+FLINT_CHANCE = 0.1
+
+
 def max_stack(item):
-    """Инструменты не складываются, вёдра по-своему, остальное до MAX_STACK."""
-    if item in TOOLS:
+    """Инструменты, лук и броня не складываются, вёдра по-своему, остальное до MAX_STACK."""
+    if item in TOOLS or item in armor.ARMOR or item in ("bow", "flint_and_steel"):
         return 1
 
     return BUCKETS.get(item, MAX_STACK)
@@ -153,9 +216,9 @@ BONUS_DROPS = {
     "oak_leaves": [("apple", 1 / 20)],
 }
 
-# Из всей листвы иногда выпадает палка, как в оригинале.
-for _leaves in ("oak_leaves", "birch_leaves", "spruce_leaves"):
-    BONUS_DROPS.setdefault(_leaves, []).append(("stick", 1 / 25))
+# Саженец своей породы из листвы.
+for _leaves, _sapling in plants.SAPLING_DROPS.items():
+    BONUS_DROPS.setdefault(_leaves, []).append((_sapling, plants.SAPLING_CHANCE))
 
 # Что выпадает в выживании, если не сам блок. None значит, что не выпадает ничего.
 DROPS = {
@@ -168,6 +231,7 @@ DROPS = {
     "birch_leaves": None,
     "spruce_leaves": None,
     "coal_ore": "coal",
+    "fire": None,
     "diamond_ore": "diamond",
 }
 
@@ -184,7 +248,24 @@ def is_known_item(item):
 
 
 def is_placeable(item):
-    return item in BLOCKS or is_door(item) or item in TORCHES
+    return item in BLOCKS or is_door(item) or item in TORCHES or item in BEDS or plants.is_plant(item)
+
+
+def max_uses(item):
+    """Сколько служит инструмент или броня, или None, если предмет не изнашивается."""
+    if item in TOOLS:
+        return TOOLS[item].uses
+
+    if item in armor.ARMOR:
+        return armor.ARMOR[item].uses
+
+    if item == "bow":
+        return BOW_USES
+
+    if item == "flint_and_steel":
+        return FLINT_AND_STEEL_USES
+
+    return None
 
 
 def flat_texture(item):
@@ -192,13 +273,26 @@ def flat_texture(item):
     if item in FLAT_ITEMS:
         return ITEM_TEXTURES + FLAT_ITEMS[item]
 
+    if item in armor.ARMOR:
+        return armor.item_texture(item)
+
     if is_door(item):
         return ITEM_TEXTURES + DOORS[item][2]
+
+    if item in BEDS:
+        return BED_ICON
+
+    # Цветы и саженцы в руке и в инвентаре плоские, картинкой самого блока.
+    if plants.is_plant(item):
+        return plants.plant_texture(item)
 
     return None
 
 
 def drop_for(block_type):
+    if block_type == "gravel" and random.random() < FLINT_CHANCE:
+        return "flint"
+
     return DROPS.get(block_type, block_type)
 
 
@@ -241,7 +335,7 @@ class Stack:
         if not is_known_item(item) or type(count) is not int or not 1 <= count <= max_stack(item):
             return None
 
-        uses = TOOLS[item].uses if item in TOOLS else 1
+        uses = max_uses(item) or 1
 
         if type(damage) is not int or not 0 <= damage < uses:
             return None
@@ -296,11 +390,23 @@ def insert(slots, stack, indices=None):
     return stack.count
 
 
-class PlayerInventory:
-    """36 ячеек: 0-8 это хотбар, 9-35 основной инвентарь."""
+def armor_from_json(value):
+    """Надетая броня из сохранения: четыре ячейки, в каждой только своя часть."""
+    worn = slots_from_json(value, len(armor.SLOTS))
 
-    def __init__(self, slots=None):
+    for index, stack in enumerate(worn):
+        if stack is not None and (stack.type not in armor.ARMOR or armor.ARMOR[stack.type].slot != index):
+            worn[index] = None
+
+    return worn
+
+
+class PlayerInventory:
+    """36 ячеек: 0-8 это хотбар, 9-35 основной инвентарь. armor: шлем, нагрудник, поножи, ботинки."""
+
+    def __init__(self, slots=None, armor_slots=None):
         self.slots = slots if slots is not None else [None] * INVENTORY_SIZE
+        self.armor = armor_slots if armor_slots is not None else [None] * len(armor.SLOTS)
 
     @property
     def hotbar(self):

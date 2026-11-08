@@ -12,7 +12,7 @@ import numpy as np
 import pygame
 
 from block import Block
-from items import TOOLS, flat_texture, item_name
+from items import flat_texture, item_name, max_uses
 from textures import load_surface
 
 
@@ -158,6 +158,10 @@ ICON_HEARTS = {
     "full": (52, 0), "half": (61, 0),
     "full_blinking": (70, 0), "half_blinking": (79, 0),
 }
+
+# Значки брони из того же атласа: пустой, половинка и целый. Ряд над сердечками.
+ICON_ARMOR = {"empty": (16, 9), "half": (25, 9), "full": (34, 9)}
+ARMOR_ROW = 10
 
 # Пузырьки воздуха из того же атласа: целый и лопающийся.
 ICON_BUBBLES = {"full": (16, 18), "popping": (25, 18)}
@@ -354,7 +358,7 @@ class Gui:
             if flat is not None:
                 # У дверей и простых предметов плоская картинка, как в инвентаре.
                 self.sprites[key] = pygame.transform.scale(
-                    pygame.image.load(flat).convert_alpha(),
+                    load_surface(flat).convert_alpha(),
                     (size * self.scale, size * self.scale)
                 )
             else:
@@ -368,10 +372,11 @@ class Gui:
 
         return self.sprites['logo']
 
-    def render_hud(self, screen, hotbar, selected, show_counts=True, health=None, blink=False, air=None):
+    def render_hud(self, screen, hotbar, selected, show_counts=True, health=None, blink=False, air=None, armor=0):
         """hotbar: девять стаков или None. Количество и сердечки видны только в выживании.
 
         air: доля оставшегося воздуха от 0 до 1 или None, если пузырьки не нужны.
+        armor: очки защиты брони, значки видны только когда они есть.
         """
         center_x = screen.get_width() // 2
         center_y = screen.get_height() // 2
@@ -408,6 +413,10 @@ class Gui:
 
         if health is not None:
             self.render_hearts(screen, slots_rect, health, blink)
+
+            if armor > 0:
+                self.render_armor(screen, slots_rect, armor)
+                name_offset += ARMOR_ROW
 
         if air is not None:
             self.render_bubbles(screen, slots_rect, air)
@@ -505,6 +514,31 @@ class Gui:
                 y += jiggle.randint(-1, 1) * self.scale
 
             screen.blit(self.get_heart(fill, blink), (slots_rect.x + index * HEART_STEP * self.scale, y))
+
+    def get_armor_icon(self, kind):
+        """Значок брони: 'empty', 'half' или 'full'. Без атласа рисуется квадратиком."""
+        key = ('armor', kind)
+
+        if key not in self.sprites:
+            if os.path.exists(ICONS):
+                x, y = ICON_ARMOR[kind]
+                icon = pygame.image.load(ICONS).convert_alpha().subsurface((x, y, HEART_SIZE, HEART_SIZE)).copy()
+            else:
+                icon = pygame.Surface((HEART_SIZE, HEART_SIZE), pygame.SRCALPHA)
+                pygame.draw.rect(icon, (200, 200, 210), (1, 1, 7, 7), 0 if kind == 'full' else 1)
+
+            self.sprites[key] = pygame.transform.scale_by(icon, self.scale)
+
+        return self.sprites[key]
+
+    def render_armor(self, screen, slots_rect, points):
+        """Десять значков брони над сердечками: каждый это 2 очка защиты."""
+        top = slots_rect.y - (HEARTS_ABOVE_HOTBAR + ARMOR_ROW) * self.scale
+
+        for index in range(10):
+            left = points - index * 2
+            kind = 'full' if left >= 2 else 'half' if left == 1 else 'empty'
+            screen.blit(self.get_armor_icon(kind), (slots_rect.x + index * HEART_STEP * self.scale, top))
 
     def get_bubble(self, kind):
         """Пузырёк воздуха: 'full' или 'popping'. Без атласа рисуется кружком."""
@@ -659,11 +693,12 @@ class Gui:
         Как в оригинале: чёрная подложка 13x2, сверху цветная полоска в пиксель
         высотой, она укорачивается и краснеет по мере износа.
         """
-        if stack.type not in TOOLS or stack.damage <= 0:
+        uses = max_uses(stack.type)
+
+        if uses is None or stack.damage <= 0:
             return
 
-        left = TOOLS[stack.type].uses - stack.damage
-        fraction = max(0.0, left / TOOLS[stack.type].uses)
+        fraction = max(0.0, (uses - stack.damage) / uses)
 
         red, green, blue = colorsys.hsv_to_rgb(fraction / 3, 1.0, 1.0)
         color = (round(red * 255), round(green * 255), round(blue * 255))

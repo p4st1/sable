@@ -7,7 +7,7 @@
 import math
 
 from collision import FEET, has_support, move, player_box
-from water import body_in_water, point_in_water
+from water import LAVA, body_in_water, point_in_water
 
 TERMINAL_VELOCITY = 60
 VOID_Y = 128
@@ -37,6 +37,8 @@ LAND_SOUND_FALL = 0.5
 # Вода, пересчитанная из тиков оригинала (20 в секунду) в блоки и секунды.
 TICKS = 20
 WATER_SPEED = 0.5
+# В лаве ещё медленнее.
+LAVA_SPEED = 0.3
 # Тянет вниз вчетверо слабее, чем в воздухе, а пробел тянет вверх вдвое сильнее.
 WATER_GRAVITY = 0.02 * TICKS * TICKS
 SWIM_UP = 0.04 * TICKS * TICKS
@@ -55,6 +57,11 @@ MAX_AIR = 15.0
 AIR_REFILL = 5.0
 DROWN_INTERVAL = 1.0
 DROWN_DAMAGE = 2
+
+# Отброс от удара моба: скорость в сторону, подскок и как быстро он гаснет.
+KNOCK_SPEED = 6.0
+KNOCK_LIFT = 4.0
+KNOCK_DECAY = 8.0
 
 
 class Player:
@@ -93,8 +100,20 @@ class Player:
         # Тело в воде (плавает) и глаза под водой (тратится воздух, синий туман).
         self.in_water = False
         self.eyes_in_water = False
+        self.in_lava = False
+        self.eyes_in_lava = False
         self.air = MAX_AIR
         self.drown_time = 0.0
+
+        # Отброс от удара: горизонтальная скорость, которая быстро гаснет.
+        self.push = [0.0, 0.0]
+
+        # Множитель скорости ходьбы: с натянутым луком игрок идёт медленно.
+        self.slowdown = 1.0
+
+        # Сколько ещё секунд игрок горит после огня, и накопленное время до урона.
+        self.fire_time = 0.0
+        self.burn_clock = 0.0
 
     def set_flying(self, flying):
         self.flying = flying
@@ -103,9 +122,12 @@ class Player:
         self.fall_start = None
 
     def damage(self, amount):
-        """Наносит урон в выживании. Во время неуязвимости после удара урон не проходит."""
+        """Наносит урон в выживании. Во время неуязвимости после удара урон не проходит.
+
+        Возвращает True, если урон прошёл.
+        """
         if not self.survival or self.dead or amount <= 0 or self.hurt_time > 0:
-            return
+            return False
 
         self.health = max(0, self.health - amount)
         self.hurt_time = HURT_TIME
@@ -113,6 +135,16 @@ class Player:
 
         if self.health == 0:
             self.dead = True
+
+        return True
+
+    def knock(self, dx, dz):
+        """Отброс в сторону (dx, dz) и чуть вверх, как от удара моба."""
+        self.push = [dx * KNOCK_SPEED, dz * KNOCK_SPEED]
+
+        if not self.flying and not self.in_water:
+            self.velocity = min(self.velocity, -KNOCK_LIFT)
+            self.on_ground = False
 
     def respawn(self, position):
         self.camera.position = position
@@ -123,6 +155,8 @@ class Player:
         self.hurt_time = 0.0
         self.velocity = 0.0
         self.fall_start = None
+        self.push = [0.0, 0.0]
+        self.fire_time = 0.0
 
     def heal(self, amount):
         """Лечит едой. Возвращает False, если лечить некого или нечего."""
@@ -258,21 +292,34 @@ class Player:
         self.update_health(dt)
 
         was_in_water = self.in_water
-        self.in_water = not self.flying and body_in_water(self.world, *player_box(self.camera.position))
+        box = player_box(self.camera.position)
+        self.in_water = not self.flying and body_in_water(self.world, *box)
         self.eyes_in_water = point_in_water(self.world, self.camera.position)
+        # В лаве плавают так же, только медленнее, и она жжёт (урон считает игра).
+        self.in_lava = not self.flying and body_in_water(self.world, *box, LAVA)
+        self.eyes_in_lava = point_in_water(self.world, self.camera.position, LAVA)
+        liquid = self.in_water or self.in_lava
         self.update_air(dt)
 
         # В полёте Shift опускает вниз, в воде топит, а на земле это подкрадывание.
-        self.sneaking = shift and not self.flying and not self.in_water
+        self.sneaking = shift and not self.flying and not liquid
 
         target_drop = SNEAK_EYE_DROP if self.sneaking else 0.0
-        self.eye_drop += (target_drop - self.eye_drop) * min(1.0, dt * SNEAK_EYE_SPEED)
+        # Глаза опускаются и поднимаются сразу, без плавного перехода.
+        self.eye_drop = target_drop
 
-        speed = self.speed * (SNEAK_SPEED if self.sneaking else 1.0) * (WATER_SPEED if self.in_water else 1.0)
+        liquid_speed = LAVA_SPEED if self.in_lava else WATER_SPEED if self.in_water else 1.0
+        speed = self.speed * self.slowdown * (SNEAK_SPEED if self.sneaking else 1.0) * liquid_speed
         x, z = self.camera.horizontal_move(forward, right, speed * dt)
 
         if self.sneaking and self.on_ground:
             x, z = self.back_off_edge(x, z)
+
+        # Отброс от удара добавляется к шагу и быстро гаснет.
+        x += self.push[0] * dt
+        z += self.push[1] * dt
+        fade = math.exp(-KNOCK_DECAY * dt)
+        self.push = [self.push[0] * fade, self.push[1] * fade]
 
         if self.flying:
             # Подъём уменьшает y, потому что ось направлена вниз.
@@ -280,9 +327,9 @@ class Player:
             self.camera.position = move(self.world, self.camera.position, (x, y, z))
             return
 
-        if self.in_water:
+        if liquid:
             # Плеск, когда игрок падает в воду с разгона.
-            if not was_in_water and self.velocity > SPLASH_SPEED:
+            if self.in_water and not was_in_water and self.velocity > SPLASH_SPEED:
                 self.events.append(("splash",))
 
             y = self.swim(dt, space, shift)
@@ -309,15 +356,15 @@ class Player:
                 self.velocity = 0.0
 
         # Упёрлись в берег из воды: выталкивает наверх, как в оригинале, чтобы вылезти.
-        if self.in_water and (x or z):
+        if liquid and (x or z):
             blocked_x = abs(self.camera.position[0] - (start[0] + x)) > 1e-9
             blocked_z = abs(self.camera.position[2] - (start[2] + z)) > 1e-9
 
             if blocked_x or blocked_z:
                 self.velocity = -WATER_CLIMB_SPEED
 
-        # Вода гасит падение: урона при приземлении не будет.
-        if self.in_water:
+        # Вода и лава гасят падение: урона при приземлении не будет.
+        if liquid:
             self.fall_start = None
 
         self.track_fall()

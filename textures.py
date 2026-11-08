@@ -6,6 +6,18 @@
 import numpy as np
 import pygame
 
+import armor
+from bed import BED_ICON, bed_icon
+from fire import FIRE_TEXTURE, fire_frames
+
+
+def lava_frames():
+    """Кадры лавы: столбец квадратов в lava_still.png."""
+    image = pygame.image.load(BLOCK_TEXTURES + "lava_still.png")
+    size = image.get_width()
+
+    return [image.subsurface((0, index * size, size, size)).copy() for index in range(max(1, image.get_height() // size))]
+
 BLOCK_TEXTURES = 'assets/minecraft/textures/block/'
 GENERATED = "generated:"
 
@@ -104,7 +116,14 @@ GENERATORS = {
     GENERATED + "chest_front": lambda: chest_texture("front"),
     GENERATED + "chest_side": lambda: chest_texture("side"),
     GENERATED + "chest_top": lambda: chest_texture("top"),
+    BED_ICON: bed_icon,
+    FIRE_TEXTURE: lambda: fire_frames()[0],
+    GENERATED + "lava": lambda: lava_frames()[0],
 }
+
+# Кожаная броня в паке серая: красим в коричневый, как некрашеная кожа в оригинале.
+for _key, (_path, _color) in armor.leather_textures().items():
+    GENERATORS[_key] = lambda path=_path, color=_color: tinted(path, color)
 
 for _stage in range(10):
     GENERATORS[GENERATED + f"destroy_stage_{_stage}"] = lambda stage=_stage: crack_texture(stage)

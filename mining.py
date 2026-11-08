@@ -49,17 +49,32 @@ HARDNESS = {
     # Факел ломается сразу, за один кадр.
     "torch": 0.01,
     "glowstone": 0.3,
+    "white_wool": 0.8,
+    "bed": 0.2,
+    # Цветы и саженцы ломаются сразу, как факел.
+    "fire": 0.01,
+    # Обсидиан ломается долго и только алмазной киркой.
+    "obsidian": 50.0,
+    "rose": 0.01,
+    "dandelion": 0.01,
+    "oak_sapling": 0.01,
+    "birch_sapling": 0.01,
+    "spruce_sapling": 0.01,
 }
 
 # Коренную породу не сломать ничем: в выживании это дно мира.
 UNBREAKABLE = {"bedrock"}
 DEFAULT_HARDNESS = 1.0
 
-# Руды у нас ломает любая кирка: железных инструментов пока нет.
+# Каменным блокам нужна кирка, а рудам ещё и достаточно прочная (см. Tool.level).
 NEEDS_PICKAXE = {
     "stone", "cobblestone", "bricks", "furnace", "netherrack", "sandstone",
-    "coal_ore", "iron_ore", "gold_ore", "diamond_ore",
+    "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "obsidian",
 }
+
+# Какой уровень кирки нужен, как в оригинале: железную руду добывает каменная,
+# золотую и алмазную железная. Остальному хватает деревянной.
+HARVEST_LEVEL = {"iron_ore": 1, "gold_ore": 2, "diamond_ore": 2, "obsidian": 3}
 
 LEAVES = {"oak_leaves", "birch_leaves", "spruce_leaves"}
 
@@ -99,10 +114,13 @@ def tool_of(item):
 
 
 def can_harvest(block_type, item):
-    """Даст ли блок добычу. Каменным блокам нужна кирка."""
+    """Даст ли блок добычу. Каменным блокам нужна кирка, рудам кирка нужного уровня."""
+    if block_type not in NEEDS_PICKAXE:
+        return True
+
     tool = tool_of(item)
 
-    return block_type not in NEEDS_PICKAXE or (tool is not None and tool.kind == "pickaxe")
+    return tool is not None and tool.kind == "pickaxe" and tool.level >= HARVEST_LEVEL.get(block_type, 0)
 
 
 def break_time(block_type, item=None):

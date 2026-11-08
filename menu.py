@@ -8,6 +8,7 @@ import time
 
 import pygame
 
+import net
 import storage
 from config import Config
 from terrain import parse_seed
@@ -59,6 +60,9 @@ SEED_LIMIT = 32
 FIELD_HEIGHT = 20
 CURSOR_BLINK_MS = 300
 DEFAULT_GENERATOR = 'default'
+
+PLAYER_NAME_LIMIT = 16
+ADDRESS_LIMIT = 64
 
 DEATH_TINT = (120, 0, 0)
 
@@ -126,6 +130,16 @@ class Menu:
         self.dragging = None
         self.pending_gui_scale = None
 
+        # Страница сетевой игры: поиск игр в локалке, имя и адрес, поле ввода.
+        self.finder = None
+        self.player_input = ""
+        self.address_input = ""
+        self.network_focus = 'address'
+
+        # Страница с сообщением (не удалось подключиться, связь потеряна) и куда с неё вернуться.
+        self.message = ("", "")
+        self.message_return = 'title'
+
     @property
     def gui(self):
         return self.game.gui
@@ -133,13 +147,40 @@ class Menu:
     @property
     def typing(self):
         """Пока открыт ввод имени, буквы не должны срабатывать как горячие клавиши."""
-        return self.page == 'create'
+        return self.page in ('create', 'multiplayer')
 
     # Переходы между страницами.
 
     def show_title(self):
         self.page = 'title'
         self.splash = random.choice(SPLASHES)
+        self.stop_finder()
+
+    def open_multiplayer(self):
+        self.page = 'multiplayer'
+        self.player_input = self.game.settings.player_name
+        self.address_input = self.game.settings.last_server
+        self.network_focus = 'address'
+
+        if self.finder is None:
+            self.finder = net.Finder()
+
+    def stop_finder(self):
+        if self.finder is not None:
+            self.finder.stop()
+            self.finder = None
+
+    def show_message(self, title, text, return_to='title'):
+        self.message = (title, text)
+        self.message_return = return_to
+        self.page = 'message'
+        self.game.set_menu(True)
+
+    def close_message(self):
+        if self.message_return == 'multiplayer':
+            self.open_multiplayer()
+        else:
+            self.show_title()
 
     def show_pause(self):
         self.page = 'pause'
@@ -186,6 +227,12 @@ class Menu:
 
         if self.page == 'pause':
             self.game.set_menu(False)
+
+        elif self.page == 'multiplayer':
+            self.show_title()
+
+        elif self.page == 'message':
+            self.close_message()
 
         elif self.page in back:
             self.dragging = None
@@ -261,6 +308,23 @@ class Menu:
             elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.create_world()
 
+        elif self.page == 'multiplayer':
+            if event.key == pygame.K_BACKSPACE:
+                if self.network_focus == 'player':
+                    self.player_input = self.player_input[:-1]
+                else:
+                    self.address_input = self.address_input[:-1]
+
+            elif event.key == pygame.K_TAB:
+                self.network_focus = 'address' if self.network_focus == 'player' else 'player'
+
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.join()
+
+        elif self.page == 'message':
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.close_message()
+
         elif self.page == 'worlds':
             if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 self.play_selected()
@@ -269,6 +333,17 @@ class Menu:
                 self.move_selection(-1 if event.key == pygame.K_UP else 1)
 
     def text(self, text):
+        if self.page == 'multiplayer':
+            if self.network_focus == 'player':
+                # В имени только буквы, цифры и подчёркивание.
+                text = "".join(char for char in text if char.isalnum() or char == "_")
+                self.player_input = (self.player_input + text)[:PLAYER_NAME_LIMIT]
+            else:
+                text = "".join(char for char in text if char.isprintable() and not char.isspace())
+                self.address_input = (self.address_input + text)[:ADDRESS_LIMIT]
+
+            return
+
         if self.page != 'create':
             return
 
@@ -285,8 +360,19 @@ class Menu:
         return WORLDS[self.generator].infinite
 
     def run_action(self, action):
+        if action.startswith('lan:'):
+            self.click_lan_game(int(action[4:]))
+            return
+
         actions = {
             'singleplayer': self.open_worlds,
+            'multiplayer': self.open_multiplayer,
+            'focus_player': lambda: setattr(self, 'network_focus', 'player'),
+            'focus_address': lambda: setattr(self, 'network_focus', 'address'),
+            'join': self.join,
+            'cancel_multiplayer': self.escape,
+            'message_back': self.close_message,
+            'lan': self.game.open_to_lan,
             'options': self.open_options,
             'video': lambda: setattr(self, 'page', 'video'),
             'sounds': lambda: setattr(self, 'page', 'sounds'),
@@ -318,6 +404,37 @@ class Menu:
         }
 
         actions[action]()
+
+    # Сетевая игра.
+
+    def lan_games(self):
+        return self.finder.games() if self.finder is not None else []
+
+    def click_lan_game(self, index):
+        games = self.lan_games()
+
+        if index >= len(games):
+            return
+
+        address = games[index].address
+        now = pygame.time.get_ticks()
+        last_address, last_time = self.last_click
+
+        self.address_input = address
+        self.last_click = (address, now)
+
+        if last_address == address and now - last_time < DOUBLE_CLICK_MS:
+            self.join()
+
+    def join(self):
+        name = self.player_input.strip()
+        address = self.address_input.strip()
+
+        if not name or not address:
+            return
+
+        self.stop_finder()
+        self.game.join_server(address, name)
 
     # Список миров.
 
@@ -583,6 +700,8 @@ class Menu:
             'video': self.render_video,
             'death': self.render_death,
             'sounds': self.render_sounds,
+            'multiplayer': self.render_multiplayer,
+            'message': self.render_message,
         }
 
         pages[self.page](screen)
@@ -617,7 +736,7 @@ class Menu:
         y = height // 4 + 48
 
         self.button(screen, 'singleplayer', "Singleplayer", x, y)
-        self.button(screen, 'multiplayer', "Multiplayer", x, y + ROW, enabled=False)
+        self.button(screen, 'multiplayer', "Multiplayer", x, y + ROW)
 
         y += ROW * 2 + 12
 
@@ -839,10 +958,68 @@ class Menu:
         self.button(screen, 'advancements', "Advancements", x, y + ROW, HALF, enabled=False)
         self.button(screen, 'statistics', "Statistics", right, y + ROW, HALF, enabled=False)
 
-        self.button(screen, 'options', "Options...", x, y + ROW * 2, HALF)
-        self.button(screen, 'lan', "Open to LAN", right, y + ROW * 2, HALF, enabled=False)
+        game = self.game
+        session = game.net
 
-        self.button(screen, 'leave', "Save and Quit to Title", x, y + ROW * 3)
+        self.button(screen, 'options', "Options...", x, y + ROW * 2, HALF)
+
+        # Открыть в локалке можно только свой мир и только один раз.
+        lan_text = f"LAN: port {session.port}" if session is not None and session.is_host else "Open to LAN"
+        self.button(screen, 'lan', lan_text, right, y + ROW * 2, HALF, enabled=session is None and game.world_folder is not None)
+
+        self.button(screen, 'leave', "Disconnect" if game.is_client else "Save and Quit to Title", x, y + ROW * 3)
+
+    def render_multiplayer(self, screen):
+        gui = self.gui
+        width, height = self.units
+
+        self.background(screen)
+
+        gui.draw_text(screen, "Play Multiplayer", (width // 2, 12))
+
+        x = width // 2 - FULL // 2
+
+        gui.draw_text(screen, "Name", (x, 24), GRAY, anchor='topleft')
+        self.draw_field(screen, 'focus_player', self.player_input, x, 33, self.network_focus == 'player')
+
+        gui.draw_text(screen, "Games on your local network", (x, 58), GRAY, anchor='topleft')
+
+        top = 68
+        rows = max(1, (height - 112 - top) // ROW)
+        games = self.lan_games()[:rows]
+
+        for index, lan_game in enumerate(games):
+            text = f"{lan_game.motd} ({lan_game.players} online)"
+            gui.draw_button(screen, f'lan:{index}', text, x, top + index * ROW, FULL, selected=lan_game.address == self.address_input.strip())
+
+        if not games:
+            if self.finder is not None and self.finder.error:
+                status = "Local network search is unavailable"
+            else:
+                status = "Scanning for games" + "." * (pygame.time.get_ticks() // 500 % 4)
+
+            gui.draw_text(screen, status, (width // 2, top + 6), SUBTEXT)
+
+        gui.draw_text(screen, "Server Address", (x, height - 76), GRAY, anchor='topleft')
+        self.draw_field(screen, 'focus_address', self.address_input, x, height - 66, self.network_focus == 'address')
+
+        ready = bool(self.player_input.strip() and self.address_input.strip())
+
+        self.button(screen, 'join', "Join Server", width // 2 - 155, height - 28, WIDE, ready)
+        self.button(screen, 'cancel_multiplayer', "Cancel", width // 2 + 5, height - 28, WIDE)
+
+    def render_message(self, screen):
+        gui = self.gui
+        width, height = self.units
+        title, text = self.message
+
+        self.background(screen)
+
+        gui.draw_text(screen, title, (width // 2, height // 2 - 30))
+        gui.draw_text(screen, gui.fit_text(text, width - 20), (width // 2, height // 2 - 12), GRAY)
+
+        back = "Back to Multiplayer" if self.message_return == 'multiplayer' else "Back to Title Screen"
+        self.button(screen, 'message_back', back, width // 2 - FULL // 2, height // 2 + 20)
 
     def render_death(self, screen):
         gui = self.gui

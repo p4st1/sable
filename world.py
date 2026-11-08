@@ -2,6 +2,7 @@ import math
 
 from block import Block
 from chunk import Chunk
+from bed import BedState, is_bed, other_half
 from door import OPPOSITE, SIDES, DoorState, across, facing_side, is_door
 
 
@@ -40,16 +41,30 @@ class World:
         # Предметы, лежащие на земле (entities.ItemEntity).
         self.items = []
 
+        # Время суток в тиках (daytime): 0 восход, 6000 полдень, 24000 сутки.
+        self.time = 0.0
+
+        # Летящие и застрявшие стрелы (projectiles.Arrow). В сохранение не попадают.
+        self.arrows = []
+
+        # Животные (mobs.Mob) и чанки, где стайка уже появлялась (mobs.populate).
+        self.mobs = []
+        self.spawned_chunks = set()
+
         # Меши воды по чанкам. Они рисуются вторым проходом, полупрозрачными.
         self.liquid_objects = {}
         self.liquids = []
 
-        # Клетки, где вода должна пересчитаться на следующем шаге (water.tick).
+        # Клетки, где вода и лава должны пересчитаться на следующем шаге (water.tick).
         self.water_updates = set()
+        self.lava_updates = set()
 
         # Бесконечный мир подгружает чанки сам (streaming.ChunkLoader). Тогда блок
         # в незагруженный чанк не ставится: иначе пустой чанк заменил бы настоящий.
         self.infinite = False
+
+        # Сетевая игра узнаёт о каждой изменённой клетке: listener(x, y, z).
+        self.listener = None
 
     def remove_chunk(self, key):
         """Выгружает чанк вместе с мешами. Сохранить его нужно до этого."""
@@ -63,6 +78,10 @@ class World:
 
         self.water_updates = {
             cell for cell in self.water_updates
+            if (cell[0] // Chunk.SIZE, cell[2] // Chunk.SIZE) != key
+        }
+        self.lava_updates = {
+            cell for cell in self.lava_updates
             if (cell[0] // Chunk.SIZE, cell[2] // Chunk.SIZE) != key
         }
 
@@ -90,6 +109,7 @@ class World:
         """Клетка поменялась: вода в ней и рядом пересчитается на следующем шаге."""
         for dx, dy, dz in ((0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
             self.water_updates.add((x + dx, y + dy, z + dz))
+            self.lava_updates.add((x + dx, y + dy, z + dz))
 
     def add_chunk(self, chunk):
         self.chunks[(chunk.chunk_x, chunk.chunk_z)] = chunk
@@ -105,6 +125,15 @@ class World:
             return 15
 
         return chunk.light_at(x % Chunk.SIZE, y, z % Chunk.SIZE)
+
+    def packed_light_at(self, x, y, z):
+        """Байт света клетки: небо в младших четырёх битах, блоки в старших."""
+        chunk = self.get_chunk(x // Chunk.SIZE, z // Chunk.SIZE)
+
+        if chunk is None:
+            return 15
+
+        return chunk.packed_light(x % Chunk.SIZE, y, z % Chunk.SIZE)
 
     def sky_light_at(self, x, y, z):
         """Небесный свет 0..15 в клетке, без света факелов."""
@@ -144,11 +173,17 @@ class World:
 
         chunk.set_block(x % Chunk.SIZE, y, z % Chunk.SIZE, block)
 
+        if self.listener is not None:
+            self.listener(x, y, z)
+
     def remove_block(self, x, y, z):
         chunk = self.get_chunk(x // Chunk.SIZE, z // Chunk.SIZE)
 
         if chunk is not None:
             chunk.remove_block(x % Chunk.SIZE, y, z % Chunk.SIZE)
+
+            if self.listener is not None:
+                self.listener(x, y, z)
 
     def chunks_around(self, x, z):
         """Чанк с этим столбцом и соседи, которых касается его сторона."""
@@ -243,6 +278,42 @@ class World:
     def remove_door(self, x, y, z):
         for position in self.door_halves(x, y, z):
             self.remove_block(*position)
+
+    def bed_halves(self, x, y, z):
+        """Клетки обеих половинок кровати, которые на месте."""
+        block = self.get_block(x, y, z)
+        cells = [(x, y, z), other_half((x, y, z), block.state)]
+
+        return [cell for cell in cells if (half := self.get_block(*cell)) is not None and is_bed(half.type)]
+
+    def remove_bed(self, x, y, z):
+        for position in self.bed_halves(x, y, z):
+            self.remove_block(*position)
+
+    def place_bed(self, position, bed_type, forward, free=lambda cell: True):
+        """Ставит кровать изножьем в position, изголовьем по взгляду. False, если места нет.
+
+        Обе клетки должны быть пустыми и стоять на целых блоках (ось Y вниз: опора в y + 1).
+        free(cell): не мешает ли там кто-нибудь (игрок, моб).
+        """
+        side = facing_side(forward)
+        # facing_side даёт сторону клетки к игроку, а изголовье смотрит от него.
+        facing = OPPOSITE[side]
+        x, y, z = position
+        dx, dz = SIDES[facing]
+        head = (x + dx, y, z + dz)
+
+        for cell in (position, head):
+            occupant = self.get_block(*cell)
+            ground = self.get_block(cell[0], cell[1] + 1, cell[2])
+
+            if (occupant is not None and not occupant.is_liquid) or ground is None or not ground.is_cube or not free(cell):
+                return False
+
+        self.set_block(*position, Block(bed_type, BedState(facing)))
+        self.set_block(*head, Block(bed_type, BedState(facing, head=True)))
+
+        return True
 
     def place_door(self, position, door_type, forward, player_position):
         """Ставит дверь нижней половиной в position. Возвращает False, если места нет.

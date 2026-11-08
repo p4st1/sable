@@ -3,8 +3,8 @@
     "screen_height": 720,
     "render_scale": 1,
     "gui_scale": 3,
-    "fps_limit": 240,
-    "sound_volume": 100,
+    "fps_limit": 0,
+    "sound_volume": 20,
     "music_volume": 100,
     "fog_distance": 48,
     "fov": 90,
@@ -13,6 +13,8 @@
     "gravity": 32,
     "jump_speed": 9,
     "reach": 6,
-    "selected_slot": 3,
-    "smooth_lighting": false
+    "selected_slot": 0,
+    "smooth_lighting": false,
+    "player_name": "Player244",
+    "last_server": "10.255.102.37:47777"
 }

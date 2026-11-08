@@ -19,7 +19,16 @@ class Camera:
         self.rotation = (x, y, 0)
 
     def horizontal_move(self, forward, right, speed):
-        """Смещение по x и z для движения относительно взгляда."""
+        """Смещение по x и z для движения относительно взгляда.
+
+        Вперёд и вбок вместе дают ту же скорость, что и по одному направлению:
+        иначе по диагонали игрок шёл бы в корень из двух раз быстрее.
+        """
+        length = math.hypot(forward, right)
+
+        if length > 1:
+            forward, right = forward / length, right / length
+
         yaw = self.rotation[1]
 
         forward_x = math.sin(yaw)

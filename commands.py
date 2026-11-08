@@ -6,7 +6,7 @@
 """
 from typing import Callable, NamedTuple
 
-from chat import GRAY, PLAYER_NAME, RED
+from chat import GRAY, RED
 from items import MAX_STACK, NAMES, item_name
 from storage import GAME_MODES
 
@@ -114,7 +114,7 @@ def teleport(game, args):
 
     game.teleport(x, y, z)
 
-    return [(f"Teleported {PLAYER_NAME} to {format_position(x, y, z)}", GRAY)]
+    return [(f"Teleported {game.player_name} to {format_position(x, y, z)}", GRAY)]
 
 
 @command("give", "/give <item> [count]", "Give yourself an item")
@@ -141,7 +141,7 @@ def give(game, args):
     if given == 0:
         raise CommandError("Inventory is full")
 
-    return [(f"Gave {given} [{item_name(item)}] to {PLAYER_NAME}", GRAY)]
+    return [(f"Gave {given} [{item_name(item)}] to {game.player_name}", GRAY)]
 
 
 @command("kill", "/kill", "Kill yourself")
@@ -151,7 +151,7 @@ def kill(game, args):
 
     game.kill_player()
 
-    return [(f"Killed {PLAYER_NAME}", GRAY)]
+    return [(f"Killed {game.player_name}", GRAY)]
 
 
 @command("clear", "/clear", "Empty your inventory")
@@ -159,13 +159,14 @@ def clear(game, args):
     if args:
         raise UsageError
 
-    removed = sum(stack.count for stack in game.inventory.slots if stack is not None)
+    removed = sum(stack.count for stack in game.inventory.slots + game.inventory.armor if stack is not None)
     game.inventory.slots[:] = [None] * len(game.inventory.slots)
+    game.inventory.armor[:] = [None] * len(game.inventory.armor)
 
     if removed == 0:
-        raise CommandError(f"No items were found on player {PLAYER_NAME}")
+        raise CommandError(f"No items were found on player {game.player_name}")
 
-    return [(f"Cleared the inventory of {PLAYER_NAME}, removing {removed} items", GRAY)]
+    return [(f"Cleared the inventory of {game.player_name}, removing {removed} items", GRAY)]
 
 
 @command("spawnpoint", "/spawnpoint", "Respawn here after death")
@@ -187,3 +188,69 @@ def seed(game, args):
         raise CommandError("This world type has no seed")
 
     return [(f"Seed: [{game.seed}]", GRAY)]
+
+
+@command("time", "/time <set|add> <value>", "Set or advance the time of day")
+def time_command(game, args):
+    if len(args) != 2 or args[0].lower() not in ("set", "add"):
+        raise UsageError
+
+    if game.is_client:
+        raise CommandError("Only the host can change the time")
+
+    if not args[1].isdigit():
+        raise CommandError(f"Invalid number '{args[1]}'")
+
+    value = int(args[1])
+
+    if args[0].lower() == "set":
+        game.set_time(value)
+        return [(f"Set the time to {value}", GRAY)]
+
+    game.set_time(game.world.time + value)
+    return [(f"Added {value} to the time", GRAY)]
+
+
+# Правила мира: имя как в оригинале -> атрибут игры. Пока одно.
+GAME_RULES = {"keepinventory": ("keepInventory", "keep_inventory")}
+
+
+@command("gamerule", "/gamerule <rule> [true|false]", "Show or change a game rule")
+def gamerule(game, args):
+    if not 1 <= len(args) <= 2:
+        raise UsageError
+
+    rule = GAME_RULES.get(args[0].lower())
+
+    if rule is None:
+        raise CommandError(f"Unknown game rule '{args[0]}'")
+
+    name, attribute = rule
+
+    if len(args) == 1:
+        return [(f"{name} = {str(getattr(game, attribute)).lower()}", GRAY)]
+
+    if game.is_client:
+        raise CommandError("Only the host can change game rules")
+
+    value = args[1].lower()
+
+    if value not in ("true", "false"):
+        raise CommandError(f"Invalid value '{args[1]}', expected true or false")
+
+    game.set_game_rule(name, value == "true")
+
+    return [(f"Game rule {name} has been updated to {value}", GRAY)]
+
+
+@command("list", "/list", "Show players in this world")
+def list_players(game, args):
+    if args:
+        raise UsageError
+
+    names = [game.player_name]
+
+    if game.net is not None:
+        names += [player.name for player in game.net.players.values() if player.joined]
+
+    return [(f"There are {len(names)} players online: {', '.join(names)}", GRAY)]

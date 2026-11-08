@@ -31,17 +31,18 @@ def box_touches_block(position, block_position):
     )
 
 
-def move_axis(world, position, axis, delta):
+def move_axis(world, position, axis, delta, box=player_box):
     """Двигает коробку вдоль оси и возвращает новую координату глаз.
 
     Проверяются все слои блоков на пути, поэтому большой шаг за кадр не проскочит
     сквозь стену. Мешает не вся клетка, а коробка блока: у двери это тонкая створка.
     Блоки, в которых коробка уже стоит, не мешают из них выйти.
+    box(position) даёт коробку тела: у игрока player_box, у мобов своя.
     """
     if delta == 0:
         return position[axis]
 
-    low, high = player_box(position)
+    low, high = box(position)
 
     first_axis, second_axis = (other for other in range(3) if other != axis)
 
@@ -94,12 +95,12 @@ def move_axis(world, position, axis, delta):
     return position[axis] + allowed
 
 
-def move(world, position, delta):
+def move(world, position, delta, box=player_box):
     """Двигает по осям отдельно: упор в стену гасит только одну ось, по другим едем дальше."""
     position = list(position)
 
     for axis in (0, 2, 1):
-        position[axis] = move_axis(world, position, axis, delta[axis])
+        position[axis] = move_axis(world, position, axis, delta[axis], box)
 
     return tuple(position)
 

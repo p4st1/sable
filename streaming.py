@@ -8,6 +8,10 @@
 Работа идёт от ближних чанков к дальним и ограничена временем на кадр, чтобы
 игра не замирала. Изменённые чанки перед выгрузкой записываются на диск,
 нетронутые просто забываются: генератор построит их точно такими же.
+
+В сетевой игре у клиента чанки, изменённые на сервере, приходят по сети
+(remote, см. multiplayer.ClientSession), а нетронутые строит свой генератор.
+Пока изменённый чанк не пришёл, загрузчик занимается другими.
 """
 import math
 import time
@@ -55,6 +59,13 @@ class ChunkLoader:
 
         world.infinite = True
 
+        # Источник изменённых чанков в сетевой игре: available(key) и take(key).
+        self.remote = None
+
+        # Вызывается для каждого чанка, только что созданного генератором
+        # (не загруженного с диска): так в нём появляются животные.
+        self.on_generate = None
+
         self.center = None
         self.radius = None
         self.order = []
@@ -67,16 +78,27 @@ class ChunkLoader:
 
     def load(self, key):
         """Чанк с диска или от генератора, сразу в мир. Меша у него ещё нет."""
-        chunk = storage.read_chunk(self.folder, *key) if self.folder is not None else None
+        if self.remote is not None:
+            chunk = self.remote.take(key)
+        elif self.folder is not None:
+            chunk = storage.read_chunk(self.folder, *key)
 
-        if chunk is None:
+            # Вода, которая текла в момент сохранения, дотекает.
+            if chunk is not None:
+                water.settle_chunk(self.world, chunk)
+        else:
+            chunk = None
+
+        generated = chunk is None
+
+        if generated:
             chunk = self.generator.generate(*key)
             self.generated += 1
-        else:
-            # Вода, которая текла в момент сохранения, дотекает.
-            water.settle_chunk(self.world, chunk)
 
         self.world.add_chunk(chunk)
+
+        if generated and self.on_generate is not None:
+            self.on_generate(chunk)
 
         return chunk
 
@@ -88,8 +110,12 @@ class ChunkLoader:
             for dz in range(-radius, radius + 1):
                 key = (center_x + dx, center_z + dz)
 
-                if key not in self.world.chunks:
+                if key not in self.world.chunks and self.available(key):
                     self.load(key)
+
+    def available(self, key):
+        """Можно ли загрузить чанк прямо сейчас. Клиент ждёт изменённые чанки с сервера."""
+        return self.remote is None or self.remote.available(key)
 
     def is_loaded(self, x, z):
         return chunk_of(x, z) in self.world.chunks
@@ -149,7 +175,10 @@ class ChunkLoader:
             chunk = chunks.get(key)
 
             if chunk is None:
-                return "load", key
+                if self.available(key):
+                    return "load", key
+
+                continue
 
             if not chunk.meshed and dx * dx + dz * dz <= mesh_limit:
                 if self.can_mesh(key):
@@ -159,7 +188,7 @@ class ChunkLoader:
                 for ndx, ndz in NEIGHBOURS:
                     neighbour = (key[0] + ndx, key[1] + ndz)
 
-                    if neighbour not in chunks:
+                    if neighbour not in chunks and self.available(neighbour):
                         return "load", neighbour
 
         return None

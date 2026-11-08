@@ -50,6 +50,9 @@ FIELDS = {
     "selected_slot": Field(1, integer_between(0, Config.HOTBAR_SIZE - 1)),
     # Мягкий свет: плавные переходы яркости и тени в углах. Без него быстрее.
     "smooth_lighting": Field(True, lambda value: type(value) is bool),
+    # Имя в сетевой игре и адрес сервера, к которому подключались последним.
+    "player_name": Field("Player", lambda value: type(value) is str and 1 <= len(value) <= 16 and all(char.isalnum() or char == "_" for char in value)),
+    "last_server": Field("", lambda value: type(value) is str and len(value) <= 64),
 }
 
 

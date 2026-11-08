@@ -1,6 +1,12 @@
 from typing import NamedTuple
 
+from bed import BEDS, BedState
+from bed import BOX as BED_BOX
+from bed import DEFAULT_STATE as BED_STATE
 from door import DEFAULT_STATE, DOORS, DoorState, door_box
+from plants import PLANTS, plant_box
+from fire import BOX as FIRE_BOX
+from fire import FIRE
 from textures import texture_path
 
 FACES = {
@@ -114,14 +120,14 @@ MAX_LIGHT = 15
 DIMMING = {"oak_leaves", "birch_leaves", "spruce_leaves", "water"}
 
 # Сколько света даёт блок сам. У печки только горящей, см. light_emission.
-EMISSION = {"torch": 14, "glowstone": 15}
+EMISSION = {"torch": 14, "glowstone": 15, "fire": 15, "lava": 15}
 LIT_FURNACE_LIGHT = 13
 
 # Кубы с дырками в текстуре: сквозь них видны соседние грани.
 TRANSPARENT = {"glass", "oak_leaves", "birch_leaves", "spruce_leaves", "cactus"}
 
 # Жидкости: сквозь них ходят, луч их не видит, а рисуются они отдельным мешем.
-LIQUIDS = {"water"}
+LIQUIDS = {"water", "lava"}
 
 # Дальше этого уровня текущая вода не растекается: у источника 0, у края 7.
 MAX_LEVEL = 7
@@ -189,6 +195,9 @@ def default_state(block_type):
     if block_type in DOORS:
         return DEFAULT_STATE
 
+    if block_type in BEDS:
+        return BED_STATE
+
     if block_type in FACING_BLOCKS:
         return DEFAULT_FACING
 
@@ -201,6 +210,9 @@ def default_state(block_type):
 def decode_state(block_type, text):
     if block_type in DOORS:
         return DoorState.decode(text)
+
+    if block_type in BEDS:
+        return BedState.decode(text)
 
     if block_type in LIQUIDS:
         return WaterState.decode(text)
@@ -218,7 +230,10 @@ class Block:
     @property
     def is_cube(self):
         """Целый куб: закрывает соседние грани и попадает в жадный меш."""
-        return self.type not in DOORS and self.type not in LIQUIDS and self.type not in TORCHES
+        return (
+            self.type not in DOORS and self.type not in LIQUIDS and self.type not in TORCHES
+            and self.type not in BEDS and self.type not in PLANTS and self.type != FIRE
+        )
 
     @property
     def is_liquid(self):
@@ -226,8 +241,8 @@ class Block:
 
     @property
     def is_solid(self):
-        """Твёрдый блок упирается в игрока и предметы. Сквозь факел проходят."""
-        return self.type not in LIQUIDS and self.type not in TORCHES
+        """Твёрдый блок упирается в игрока и предметы. Сквозь факел и растения проходят."""
+        return self.type not in LIQUIDS and self.type not in TORCHES and self.type not in PLANTS and self.type != FIRE
 
     @property
     def light_opacity(self):
@@ -262,6 +277,15 @@ class Block:
         if self.type in DOORS:
             return door_box(self.state)
 
+        if self.type in BEDS:
+            return BED_BOX
+
+        if self.type in PLANTS:
+            return plant_box(self.type)
+
+        if self.type == FIRE:
+            return FIRE_BOX
+
         return TORCH_BOX if self.type in TORCHES else CUBE_BOX
 
     def key(self):
@@ -286,7 +310,10 @@ REMOVED = {"granite": "stone", "diorite": "stone", "andesite": "stone"}
 
 
 def is_known_type(block_type):
-    return block_type in BLOCKS or block_type in DOORS or block_type in LIQUIDS or block_type in TORCHES
+    return (
+        block_type in BLOCKS or block_type in DOORS or block_type in LIQUIDS
+        or block_type in TORCHES or block_type in BEDS or block_type in PLANTS or block_type == FIRE
+    )
 
 
 # Номера блоков для массивов чанков. Номер выдаётся паре "тип и состояние" при
@@ -388,6 +415,8 @@ BLOCKS = {
     "cactus": {**all_sides("cactus_side.png"), "top": "cactus_top.png", "bottom": "cactus_bottom.png"},
     "bedrock": all_sides("bedrock.png"),
     "glowstone": all_sides("glowstone.png"),
+    "obsidian": all_sides("obsidian.png"),
+    "white_wool": all_sides("white_wool.png"),
 
     "coal_ore": all_sides("coal_ore.png"),
     "iron_ore": all_sides("iron_ore.png"),

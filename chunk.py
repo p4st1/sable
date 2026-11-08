@@ -11,6 +11,9 @@ import numpy as np
 
 import mesher
 from block import MAX_LIGHT, PALETTE, TORCH_BOX, TORCH_TEXTURE, TORCHES, Block, block_id, ids_where
+from bed import BED_TEXTURE, BEDS, bed_parts
+from plants import CROSS_INSET, PLANTS, plant_texture
+from fire import FIRE, FIRE_TEXTURE
 from door import DOORS, door_box, door_texture, door_uv
 from textures import texture_path
 
@@ -83,6 +86,27 @@ BRIGHTNESS = np.array([light_curve(level) for level in range(MAX_LIGHT + 1)], dt
 # Яркость байта: по большему из двух уровней.
 PACKED_BRIGHTNESS = np.array([BRIGHTNESS[max(value & 15, value >> 4)] for value in range(256)], dtype=np.float64)
 
+# Ночью небесный свет слабее на столько уровней, как в оригинале. Свет блоков
+# (факелы) не меняется. Меш хранит яркость и днём, и глубокой ночью, а между ними
+# растеризатор смешивает по времени суток.
+NIGHT_DARKNESS = 11
+NIGHT_BRIGHTNESS = np.array(
+    [BRIGHTNESS[max((value & 15) - NIGHT_DARKNESS, value >> 4, 0)] for value in range(256)],
+    dtype=np.float64
+)
+
+
+def packed_shades(packed):
+    """Яркость байта света днём и глубокой ночью."""
+    return float(PACKED_BRIGHTNESS[packed]), float(NIGHT_BRIGHTNESS[packed])
+
+
+def packed_brightness(packed, night):
+    """Яркость байта света при доле ночи night (0 днём, 1 глубокой ночью)."""
+    day = PACKED_BRIGHTNESS[packed]
+
+    return float(day + (NIGHT_BRIGHTNESS[packed] - day) * night)
+
 
 def light_level(packed):
     return max(packed & 15, packed >> 4)
@@ -146,9 +170,9 @@ def mesh_tables():
     return _tables[1:]
 
 
-def quads_to_mesh(quads, corner_shades, y_base):
-    """Прямоугольники мешера в данные мешей по текстурам: {путь: {points, triangles, uvs, shades}}."""
-    points, uvs, shades, textures = [], [], [], []
+def quads_to_mesh(quads, corner_shades, night_corner_shades, y_base):
+    """Прямоугольники мешера в данные мешей по текстурам: {путь: {points, triangles, uvs, shades, night_shades}}."""
+    points, uvs, shades, night_shades, textures = [], [], [], [], []
 
     for index, face in enumerate(MESH_FACES):
         selected = quads[:, 0] == index
@@ -176,6 +200,7 @@ def quads_to_mesh(quads, corner_shades, y_base):
         uvs.append(corner_uvs[None, :, :] * np.stack([size_a, size_b], axis=1)[:, None, :])
         order = [CORNER_INDEX[tuple(corner)] for corner in QUAD_SHAPES[face][2]]
         shades.append(corner_shades[selected][:, order])
+        night_shades.append(night_corner_shades[selected][:, order])
         textures.append(rows[:, 6])
 
     if not points:
@@ -184,6 +209,7 @@ def quads_to_mesh(quads, corner_shades, y_base):
     points = np.concatenate(points)
     uvs = np.concatenate(uvs)
     shades = np.concatenate(shades).astype(np.float32) / 255
+    night_shades = np.concatenate(night_shades).astype(np.float32) / 255
     textures = np.concatenate(textures)
 
     mesh_data = {}
@@ -193,6 +219,7 @@ def quads_to_mesh(quads, corner_shades, y_base):
         quad_points = points[selected]
         quad_uvs = uvs[selected]
         quad_shades = shades[selected]
+        quad_night = night_shades[selected]
         count = len(quad_points)
 
         # Диагональ, вдоль которой яркость меняется меньше.
@@ -207,6 +234,7 @@ def quads_to_mesh(quads, corner_shades, y_base):
             "triangles": triangles,
             "uvs": triangle_uvs,
             "shades": quad_shades.reshape(-1),
+            "night_shades": quad_night.reshape(-1),
         }
 
     return mesh_data
@@ -216,9 +244,10 @@ def add_box(mesh_data, texture, low, high, position, uv_of, shade_of, hidden=())
     """Коробка (дверь, факел) гранями в данные меша. Текстур таких моделей у кубов
     не бывает, поэтому здесь всегда списки, а не массивы мешера.
 
-    uv_of(face, x, y, z): UV угла по его координатам в клетке, shade_of(face): яркость грани.
+    uv_of(face, x, y, z): UV угла по его координатам в клетке, shade_of(face): яркость
+    грани днём и ночью парой.
     """
-    data = mesh_data.setdefault(texture, {"points": [], "triangles": [], "uvs": [], "shades": []})
+    data = mesh_data.setdefault(texture, {"points": [], "triangles": [], "uvs": [], "shades": [], "night_shades": []})
     x, y, z = position
 
     for face in MESH_FACES:
@@ -227,12 +256,13 @@ def add_box(mesh_data, texture, low, high, position, uv_of, shade_of, hidden=())
 
         corners = box_face(face, low, high)
         uvs = [uv_of(face, *corner) for corner in corners]
-        shade = shade_of(face)
+        shade, night_shade = shade_of(face)
 
         start = len(data["points"])
 
         data["points"].extend((x + cx, y + cy, z + cz) for cx, cy, cz in corners)
         data["shades"].extend([shade] * 4)
+        data["night_shades"].extend([night_shade] * 4)
 
         data["triangles"].append((start, start + 1, start + 2))
         data["triangles"].append((start, start + 2, start + 3))
@@ -387,28 +417,91 @@ class Chunk:
         self.light = np.ascontiguousarray(light[inner, :, inner])
         self.light_top = top
 
-        quads, shades = mesher.greedy_quads(
-            volume, self.light, cube, opaque, kind, face_tex, PACKED_BRIGHTNESS, FACE_SHADES, smooth_lighting
+        quads, shades, night_shades = mesher.greedy_quads(
+            volume, self.light, cube, opaque, kind, face_tex, PACKED_BRIGHTNESS, FACE_SHADES, smooth_lighting,
+            NIGHT_BRIGHTNESS
         )
-        mesh_data = quads_to_mesh(quads, shades, top + 1)
+        mesh_data = quads_to_mesh(quads, shades, night_shades, top + 1)
 
-        for (x, y, z), block in self.cells(ids_where(lambda block: block.type in DOORS or block.type in TORCHES)):
+        models = lambda block: block.type in DOORS or block.type in TORCHES or block.type in BEDS or block.type in PLANTS or block.type == FIRE
+
+        for (x, y, z), block in self.cells(ids_where(models)):
             if block.type in TORCHES:
                 self.add_torch(mesh_data, x, y, z)
+            elif block.type in PLANTS:
+                self.add_plant(mesh_data, x, y, z, block)
+            elif block.type == FIRE:
+                self.add_fire(mesh_data, x, y, z)
+            elif block.type in BEDS:
+                self.add_bed(mesh_data, x, y, z, block)
             else:
                 self.add_door(mesh_data, world, x, y, z, block)
 
         return mesh_data
 
     def flat_shade(self, x, y, z):
-        """Яркость грани модели в клетке: свет самой клетки и множитель стороны."""
-        brightness = BRIGHTNESS[self.light_at(x, y, z)]
+        """Яркость грани модели в клетке днём и ночью: свет самой клетки и множитель стороны."""
+        day, night = packed_shades(self.packed_light(x, y, z))
 
-        return lambda face: float(brightness * FACE_SHADE[face])
+        return lambda face: (day * FACE_SHADE[face], night * FACE_SHADE[face])
 
     def add_torch(self, mesh_data, x, y, z):
         """Факел светится сам, поэтому темнее своей клетки он не бывает."""
-        add_box(mesh_data, texture_path(TORCH_TEXTURE), *TORCH_BOX, (x, y, z), cell_uv, lambda face: 1.0)
+        add_box(mesh_data, texture_path(TORCH_TEXTURE), *TORCH_BOX, (x, y, z), cell_uv, lambda face: (1.0, 1.0))
+
+    def add_fire(self, mesh_data, x, y, z):
+        """Пламя: крест по диагоналям и четыре плоскости у стенок клетки, с обеих сторон.
+
+        Огонь светится сам, поэтому всегда полной яркости. Кадры анимации
+        меняет рендерер прямо в текстуре, меш перестраивать не нужно.
+        """
+        data = mesh_data.setdefault(FIRE_TEXTURE, {"points": [], "triangles": [], "uvs": [], "shades": [], "night_shades": []})
+        inset = 0.1
+        lines = (
+            ((0, 0), (1, 1)), ((0, 1), (1, 0)),
+            ((0, inset), (1, inset)), ((0, 1 - inset), (1, 1 - inset)),
+            ((inset, 0), (inset, 1)), ((1 - inset, 0), (1 - inset, 1)),
+        )
+
+        for (x0, z0), (x1, z1) in lines:
+            corners = [(x + x0, y, z + z0), (x + x1, y, z + z1), (x + x1, y + 1, z + z1), (x + x0, y + 1, z + z0)]
+            uvs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            start = len(data["points"])
+
+            data["points"].extend(corners)
+            data["shades"].extend([1.0] * 4)
+            data["night_shades"].extend([1.0] * 4)
+
+            for a, b, c in ((0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)):
+                data["triangles"].append((start + a, start + b, start + c))
+                data["uvs"].append((uvs[a], uvs[b], uvs[c]))
+
+    def add_plant(self, mesh_data, x, y, z, block):
+        """Растение крестом: две диагональные плоскости, видные с обеих сторон."""
+        data = mesh_data.setdefault(plant_texture(block.type), {"points": [], "triangles": [], "uvs": [], "shades": [], "night_shades": []})
+        day, night = packed_shades(self.packed_light(x, y, z))
+        low, high = CROSS_INSET, 1 - CROSS_INSET
+
+        for (x0, z0), (x1, z1) in (((low, low), (high, high)), ((low, high), (high, low))):
+            # Ось Y вниз: верх картинки (v = 0) у y, низ у y + 1.
+            corners = [(x + x0, y, z + z0), (x + x1, y, z + z1), (x + x1, y + 1, z + z1), (x + x0, y + 1, z + z0)]
+            uvs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            start = len(data["points"])
+
+            data["points"].extend(corners)
+            data["shades"].extend([day] * 4)
+            data["night_shades"].extend([night] * 4)
+
+            for a, b, c in ((0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)):
+                data["triangles"].append((start + a, start + b, start + c))
+                data["uvs"].append((uvs[a], uvs[b], uvs[c]))
+
+    def add_bed(self, mesh_data, x, y, z, block):
+        """Половинка кровати: матрас и две ножки отдельными коробками, как дверь."""
+        shade = self.flat_shade(x, y, z)
+
+        for low, high, uv_of, hidden in bed_parts(block.state):
+            add_box(mesh_data, BED_TEXTURE, low, high, (x, y, z), uv_of, shade, hidden)
 
     def add_door(self, mesh_data, world, x, y, z, block):
         """Створка двери отдельной коробкой: в жадный меш она не попадает."""

@@ -1,5 +1,7 @@
 """Генератор бесконечного мира: рельеф, биомы, реки, пещеры, руды и деревья.
 
+Пещеры вырезает caves.CaveCarver: тоннели, как в 1.0.
+
 Всё зависит только от сида и координат, поэтому чанк можно построить в любой
 момент и в любом порядке, и он выйдет одинаковым. Сохраняются только чанки,
 которые игрок изменил, остальные строятся заново при подгрузке.
@@ -10,11 +12,13 @@
 Шум — классический Перлин на numpy: столбцы и объём чанка считаются целиком.
 """
 import math
+import random
 import zlib
 
 import numpy as np
 
 from block import Block, block_id, type_id
+from caves import CaveCarver
 from chunk import HEIGHT, Y_MIN, Chunk
 
 SIZE = Chunk.SIZE
@@ -31,12 +35,6 @@ MAX_HEIGHT = 100
 # крона ели шире всех, у неё радиус 3. Ещё один столбец нужен для сравнения соседей.
 TREE_MARGIN = 3
 MARGIN = TREE_MARGIN + 2
-
-# Пещеры не подходят к поверхности ближе этого, кроме входов в них.
-CAVE_ROOF = 5
-# И к дну моря или реки тоже: иначе вода стояла бы стеной у входа в пещеру.
-CAVE_WATER_ROOF = 6
-CAVE_BOTTOM = BEDROCK_Y - BEDROCK_LAYERS
 
 OCEAN, BEACH, PLAINS, FOREST, DESERT, TAIGA, MOUNTAINS, RIVER, PEAKS = range(9)
 
@@ -57,6 +55,24 @@ def ids(*names):
 
 
 AIR = 0
+ROSE, DANDELION, LAVA = (type_id(name) for name in ("rose", "dandelion", "lava"))
+
+# Ниже этого (наш y больше) дно пещер залито лавой: в оригинале это y < 10 над дном мира.
+CAVE_LAVA_Y = BEDROCK_Y - 9
+
+# Озёра: водяное раз на столько чанков, лавовое раз на столько, высота ящика.
+LAKE_WATER_CHANCE = 4
+LAKE_LAVA_CHANCE = 8
+LAKE_DEPTH = 8
+# Уровень моря оригинала (его высота 63 это наш y = 0).
+LAKE_SEA = 63
+
+# Цветы: доля клеток с цветком внутри полянки, доля полянок и сколько из цветов розы.
+FLOWER_PLAINS = 0.08
+FLOWER_FOREST = 0.04
+FLOWER_PATCHES = 0.3
+FLOWER_PATCH_SIZE = 8
+ROSE_SHARE = 0.3
 (STONE, DIRT, GRASS, SAND, SANDSTONE, GRAVEL, CLAY, SNOWY_GRASS, SNOW, ICE,
  BEDROCK, WATER, OAK_LOG, OAK_LEAVES, BIRCH_LOG, BIRCH_LEAVES, SPRUCE_LOG,
  SPRUCE_LEAVES, CACTUS) = ids(
@@ -272,9 +288,12 @@ class TerrainGenerator:
         self.seed = seed
 
         names = ("continent", "erosion", "detail", "ridge", "river", "temperature",
-                 "humidity", "entrance", "surface", "cave_a", "cave_b", "cavern")
+                 "humidity", "entrance", "surface")
 
         self.noise = {name: Perlin(seed, name) for name in names}
+        self.caves = CaveCarver(seed)
+        # Озёра по чанкам: считаются один раз (см. lake_plan).
+        self.lakes = {}
 
     # Столбцы.
 
@@ -407,9 +426,12 @@ class TerrainGenerator:
         ids = np.zeros((SIZE, HEIGHT, SIZE), dtype=np.uint16)
 
         self.fill_terrain(ids, area, inside, x[inside], z[inside])
-        self.carve_caves(ids, area, inside, x[inside], z[inside])
+        # Пещеры как в 1.0: тоннели, а не залы. Вода и коренная порода не трогаются.
+        self.caves.carve(ids, chunk_x, chunk_z, Y_MIN, (WATER, BEDROCK), (CAVE_LAVA_Y, LAVA))
+        self.place_lakes(ids, chunk_x, chunk_z)
         self.add_ores(ids, chunk_x, chunk_z)
         self.plant_trees(ids, area, x, z, base_x, base_z)
+        self.place_flowers(ids, area, inside, x[inside], z[inside])
 
         return Chunk(chunk_x, chunk_z, ids)
 
@@ -473,41 +495,136 @@ class TerrainGenerator:
 
         ids[:] = volume
 
-    def carve_caves(self, ids, area, inside, x, z):
-        """Пещеры-тоннели там, где два шума одновременно близки к нулю, и залы в глубине."""
-        top = area.top
+    # Озёра.
 
-        # Пещера не ближе CAVE_WATER_ROOF ко дну воды в радиусе двух столбцов.
-        water_floor = np.where(area.height < SEA_LEVEL, top + CAVE_WATER_ROOF, -10_000)
-        water_floor = shift_max(water_floor, 2)[inside]
+    def lake_plan(self, chunk_x, chunk_z):
+        """Озёра чанка до постройки: [(жидкость, наш y начала, форма 16x8x16, у поверхности ли)].
 
-        roof = np.where(area.entrance[inside], top[inside] - 1, top[inside] + CAVE_ROOF)
-        roof = np.maximum(roof, water_floor)
+        Как в 1.0: водяное в четверти чанков, лавовое в восьмой части, лавовые
+        почти всегда под землёй (выше моря только одно из десяти). Всё зависит
+        только от сида и чанка, поэтому соседи знают, где у поверхности будет
+        озеро, и не сажают туда деревьев.
+        """
+        key = (chunk_x, chunk_z)
 
-        first = int(roof.min()) + 1
+        if key in self.lakes:
+            return self.lakes[key]
 
-        if first > CAVE_BOTTOM:
+        rng = random.Random((self.seed * 0x5DEECE66D + chunk_x * 341873128712 + chunk_z * 132897987541) & 0xFFFFFFFFFFFFFFFF)
+        plans = []
+
+        if rng.randrange(LAKE_WATER_CHANCE) == 0:
+            plans.append((WATER, LAKE_SEA - rng.randrange(128), self.lake_shape(rng)))
+
+        if rng.randrange(LAKE_LAVA_CHANCE) == 0:
+            height = rng.randrange(rng.randrange(120) + 8)
+
+            if height < LAKE_SEA or rng.randrange(10) == 0:
+                plans.append((LAVA, LAKE_SEA - height, self.lake_shape(rng)))
+
+        result = []
+
+        if plans:
+            center_x = chunk_x * SIZE + SIZE // 2
+            center_z = chunk_z * SIZE + SIZE // 2
+            ground = int(self.columns(np.array([[center_x]]), np.array([[center_z]])).top[0, 0])
+
+            # Озеро, начатое выше земли, опустится на её поверхность.
+            result = [(liquid, start, shape, start <= ground) for liquid, start, shape in plans]
+
+        self.lakes[key] = result
+
+        if len(self.lakes) > 4096:
+            self.lakes.pop(next(iter(self.lakes)))
+
+        return result
+
+    @staticmethod
+    def lake_shape(rng):
+        """Форма озера: несколько сплюснутых шаров в ящике 16x8x16 (слой 0 сверху)."""
+        shape = np.zeros((SIZE, LAKE_DEPTH, SIZE), dtype=bool)
+        gx = np.arange(SIZE)[:, None, None]
+        gy = np.arange(LAKE_DEPTH)[None, :, None]
+        gz = np.arange(SIZE)[None, None, :]
+
+        for _ in range(rng.randrange(4) + 4):
+            width = rng.random() * 6 + 3
+            depth = rng.random() * 4 + 2
+            length = rng.random() * 6 + 3
+            cx = rng.random() * (SIZE - width - 2) + 1 + width / 2
+            # В оригинале y вверх: низ ящика это слой 0. У нас слой 0 сверху.
+            cy = rng.random() * (LAKE_DEPTH - depth - 4) + 2 + depth / 2
+            cz = rng.random() * (SIZE - length - 2) + 1 + length / 2
+
+            shape |= (
+                ((gx - cx) / (width / 2)) ** 2
+                + ((LAKE_DEPTH - 1 - gy - cy) / (depth / 2)) ** 2
+                + ((gz - cz) / (length / 2)) ** 2
+            ) < 1
+
+        shape[0, :, :] = shape[-1, :, :] = False
+        shape[:, :, 0] = shape[:, :, -1] = False
+        shape[:, 0, :] = shape[:, -1, :] = False
+
+        return shape
+
+    def lake_at_surface(self, x, z):
+        """Есть ли в столбце мира озеро у поверхности: тогда дерево там не растёт."""
+        chunk_x, chunk_z = x // SIZE, z // SIZE
+
+        for _, _, shape, surface in self.lake_plan(chunk_x, chunk_z):
+            if surface and shape[x - chunk_x * SIZE, :, z - chunk_z * SIZE].any():
+                return True
+
+        return False
+
+    def place_lakes(self, ids, chunk_x, chunk_z):
+        for index, (liquid, start, shape, _) in enumerate(self.lake_plan(chunk_x, chunk_z)):
+            self.lake(ids, start, shape, liquid, (chunk_x, chunk_z, index))
+
+    def lake(self, ids, y, shape, liquid, salt):
+        """Озеро: нижние четыре слоя залиты, верхние пустые. Ящик опускается до первого
+        не пустого блока. Если озеро вскрыло бы жидкость или пустоту сбоку, его нет."""
+        center = SIZE // 2
+
+        while y < BEDROCK_Y - 5 and ids[center, y - Y_MIN, center] == AIR:
+            y += 1
+
+        if y >= BEDROCK_Y - 4:
             return
 
-        y = np.arange(first, CAVE_BOTTOM + 1, dtype=np.float64)
-        fx = x[:, None, :].astype(np.float64)
-        fy = y[None, :, None]
-        fz = z[:, None, :].astype(np.float64)
+        top = y - 4
 
-        a = self.noise["cave_a"].noise3(fx / 52, fy / 26, fz / 52)
-        b = self.noise["cave_b"].noise3(fx / 52, fy / 26, fz / 52)
-        tunnels = a * a + b * b < 0.0045
+        if top - Y_MIN < 0 or top + LAKE_DEPTH - Y_MIN > HEIGHT:
+            return
 
-        cavern = self.noise["cavern"].fbm3(fx / 80, fy / 36, fz / 80, 2)
-        depth_factor = smoothstep(10, 40, fy)
-        caverns = cavern * depth_factor > 0.32
+        box = ids[:, top - Y_MIN:top - Y_MIN + LAKE_DEPTH, :]
+        flooded = np.arange(LAKE_DEPTH)[None, :, None] >= LAKE_DEPTH - 4
 
-        carve = (tunnels | caverns) & (fy > roof[:, None, :])
+        # Край озера: клетки рядом с ним, но не в нём.
+        border = np.zeros_like(shape)
+        border[1:] |= shape[:-1]
+        border[:-1] |= shape[1:]
+        border[:, 1:] |= shape[:, :-1]
+        border[:, :-1] |= shape[:, 1:]
+        border[:, :, 1:] |= shape[:, :, :-1]
+        border[:, :, :-1] |= shape[:, :, 1:]
+        border &= ~shape
 
-        rows = slice(first - Y_MIN, CAVE_BOTTOM - Y_MIN + 1)
-        region = ids[:, rows, :]
-        solid = (region != AIR) & (region != WATER) & (region != BEDROCK)
-        region[carve & solid] = AIR
+        liquid_cells = (box == WATER) | (box == LAVA)
+
+        # Над водой не должно быть жидкости, а у берега ниже воды пустоты.
+        if np.any(border & ~flooded & liquid_cells) or np.any(border & flooded & (box == AIR)):
+            return
+
+        box[shape & flooded] = liquid
+        box[shape & ~flooded] = AIR
+
+        # Берег лавового озера каменный, как в оригинале: ниже лавы весь, выше через раз.
+        if liquid == LAVA:
+            coin = np.random.default_rng(abs(hash((self.seed, salt))) % (1 << 63)).random(shape.shape) < 0.5
+            solid = (box != AIR) & (box != WATER) & (box != LAVA)
+            box[border & solid & (flooded | coin)] = STONE
 
     def add_ores(self, ids, chunk_x, chunk_z):
         """Жилы руд и пород: случайное блуждание от точки, меняет только камень."""
@@ -534,6 +651,33 @@ class TerrainGenerator:
                 xs, ys, zs = cells[:, 0], cells[:, 1], cells[:, 2]
                 stone = ids[xs, ys, zs] == STONE
                 ids[xs[stone], ys[stone], zs[stone]] = ore.id
+
+    # Цветы.
+
+    def place_flowers(self, ids, area, inside, x, z):
+        """Розы и одуванчики на траве: полянками, на равнинах гуще, чем в лесу."""
+        biome = area.biome[inside]
+        top = area.top[inside]
+
+        roll = hash01(self.seed, 31, x, z)
+        kind = hash01(self.seed, 32, x, z)
+        # Полянки: часть квадратов 8x8 с цветами, остальные без них.
+        patch = hash01(self.seed, 33, x // FLOWER_PATCH_SIZE, z // FLOWER_PATCH_SIZE)
+
+        density = np.select([biome == PLAINS, biome == FOREST], [FLOWER_PLAINS, FLOWER_FOREST], 0.0)
+        candidate = (roll < density) & (patch < FLOWER_PATCHES)
+
+        for i, j in zip(*np.nonzero(candidate)):
+            row = int(top[i, j]) - Y_MIN
+
+            if not 1 <= row < HEIGHT:
+                continue
+
+            # Только на траве и только в пустую клетку над ней (ось Y вниз).
+            if ids[i, row, j] != GRASS or ids[i, row - 1, j] != AIR:
+                continue
+
+            ids[i, row - 1, j] = ROSE if kind[i, j] < ROSE_SHARE else DANDELION
 
     # Деревья.
 
@@ -579,6 +723,10 @@ class TerrainGenerator:
             kind = kind_roll[i, j]
             size = size_roll[i, j]
             column_biome = biome[i, j]
+
+            # Над пещерой, которая вскрыла землю, и в озере дерево не растёт.
+            if self.caves.carved_at(int(x[i, j]), ground, int(z[i, j])) or self.lake_at_surface(int(x[i, j]), int(z[i, j])):
+                continue
 
             # Ствол растёт из блока, который сейчас в этом столбце сверху.
             if column_biome == DESERT:

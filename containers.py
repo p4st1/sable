@@ -26,6 +26,8 @@ FUEL = {
     "wooden_axe": 10.0,
     "wooden_shovel": 10.0,
     "wooden_sword": 10.0,
+    # Ведро лавы горит дольше всего, а пустое ведро остаётся в печке.
+    "lava_bucket": 1000.0,
 }
 
 SMELTING = {
@@ -38,6 +40,7 @@ SMELTING = {
     "gold_ore": "gold_ingot",
     "clay": "bricks",
     "porkchop": "cooked_porkchop",
+    "beef": "cooked_beef",
 }
 
 INPUT, FUEL_SLOT, OUTPUT = 0, 1, 2
@@ -103,7 +106,7 @@ class Furnace:
             fuel.count -= 1
 
             if fuel.count == 0:
-                self.slots[FUEL_SLOT] = None
+                self.slots[FUEL_SLOT] = Stack("bucket") if fuel.type == "lava_bucket" else None
 
         if self.lit and result is not None:
             self.progress += dt

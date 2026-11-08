@@ -46,6 +46,13 @@ MATERIALS = {
     "spruce_planks": "wood",
     "torch": "wood",
     "glowstone": "glass",
+    "white_wool": "wool",
+    "bed": "wool",
+    "rose": "grass",
+    "dandelion": "grass",
+    "oak_sapling": "grass",
+    "birch_sapling": "grass",
+    "spruce_sapling": "grass",
 }
 DEFAULT_MATERIAL = "stone"
 
@@ -60,6 +67,8 @@ FALLBACKS = {
     "item.bucket.fill": ["liquid/splash"],
     "item.bucket.empty": ["liquid/splash2"],
     "entity.player.swim": ["liquid/splash", "liquid/splash2"],
+    "item.bucket.fill_lava": "item.bucket.fill",
+    "item.bucket.empty_lava": "item.bucket.empty",
 }
 
 
@@ -72,6 +81,8 @@ class Sounds:
         self.volume = volume
         self.cache = {}
         self.events = {}
+        # Свои звуки пещер: собираются при первом страшном звуке (cave_sounds).
+        self.cave_sounds = None
         self.enabled = self.start_mixer()
 
         if self.enabled:
@@ -135,6 +146,10 @@ class Sounds:
 
         return []
 
+    def has(self, event):
+        """Есть ли у события хоть один файл (своим или через замену)."""
+        return bool(self.files_for(event))
+
     def load(self, name):
         if name not in self.cache:
             try:
@@ -160,6 +175,13 @@ class Sounds:
         if sound is None:
             return False
 
+        return self.play_sound(sound, volume, pan)
+
+    def play_sound(self, sound, volume=1.0, pan=0.0):
+        """Играет готовый звук (pygame.mixer.Sound) с громкостью и стороной."""
+        if not self.enabled or self.volume <= 0:
+            return False
+
         channel = sound.play()
 
         if channel is None:
@@ -170,8 +192,8 @@ class Sounds:
 
         return True
 
-    def play_at(self, event, position, listener, volume=1.0):
-        """Звук в точке мира: тише с расстоянием, громче в том ухе, с чьей он стороны."""
+    def spatial(self, position, listener, volume):
+        """Громкость и сторона звука в точке мира, или None, если он не слышен."""
         x, y, z = position
         eye_x, eye_y, eye_z = listener.position
 
@@ -179,7 +201,7 @@ class Sounds:
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if distance >= HEARING_DISTANCE:
-            return False
+            return None
 
         volume *= 1.0 - distance / HEARING_DISTANCE
 
@@ -193,7 +215,29 @@ class Sounds:
             # Совсем в одно ухо не уводим: так звучит естественнее.
             pan *= 0.7
 
-        return self.play(event, volume, pan)
+        return volume, pan
+
+    def play_at(self, event, position, listener, volume=1.0):
+        """Звук в точке мира: тише с расстоянием, громче в том ухе, с чьей он стороны."""
+        heard = self.spatial(position, listener, volume)
+
+        return heard is not None and self.play(event, *heard)
+
+    def cave_sound(self, position, listener, volume=1.0):
+        """Страшный звук пещеры: из пака (ambient.cave), а если его там нет, свой синтезированный."""
+        if self.has("ambient.cave"):
+            return self.play_at("ambient.cave", position, listener, volume)
+
+        if self.cave_sounds is None:
+            import cave_sounds
+            self.cave_sounds = cave_sounds.make_sounds() if self.enabled else []
+
+        heard = self.spatial(position, listener, volume)
+
+        if not self.cave_sounds or heard is None:
+            return False
+
+        return self.play_sound(random.choice(self.cave_sounds), *heard)
 
     def block_sound(self, block_type, action, position, listener, volume=1.0):
         """action: break, place или step."""

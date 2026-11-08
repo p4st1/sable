@@ -1,6 +1,8 @@
 """Типы миров: бесконечный мир из генератора и тестовые площадки.
 
 Быстрый вход минуя меню: python main.py hills [--new] или python main.py default --new.
+Сетевая игра: python main.py default --lan (открыть мир в локальной сети) и
+python main.py --join 192.168.1.5[:порт] --name Bob (войти в чужой).
 """
 import math
 from typing import Callable, NamedTuple
@@ -9,6 +11,9 @@ from block import Block
 from chunk import Chunk
 
 NEW_FLAG = "--new"
+LAN_FLAG = "--lan"
+# Флаги со значением: --join адрес, --name имя.
+VALUE_FLAGS = ("--join", "--name")
 
 
 class TestWorld(NamedTuple):
@@ -227,12 +232,32 @@ def find_world(answer):
 
 
 def parse_arguments(arguments):
-    """Возвращает мир из командной строки (или None для главного меню) и нужен ли --new."""
-    new_world = NEW_FLAG in arguments
-    names = [argument for argument in arguments if argument != NEW_FLAG]
+    """Возвращает мир из командной строки (или None для главного меню), нужен ли --new
+    и сетевые настройки: {"join": адрес, "name": имя, "lan": True}."""
+    options = {}
+    rest = []
+    arguments = list(arguments)
+
+    while arguments:
+        argument = arguments.pop(0)
+
+        if argument in VALUE_FLAGS:
+            if not arguments:
+                raise SystemExit(f"После {argument} нужно значение")
+
+            options[argument[2:]] = arguments.pop(0)
+
+        elif argument == LAN_FLAG:
+            options["lan"] = True
+
+        else:
+            rest.append(argument)
+
+    new_world = NEW_FLAG in rest
+    names = [argument for argument in rest if argument != NEW_FLAG]
 
     if not names:
-        return None, False
+        return None, False, options
 
     name = find_world(names[0])
 
@@ -244,4 +269,4 @@ def parse_arguments(arguments):
 
         raise SystemExit(1)
 
-    return name, new_world
+    return name, new_world, options

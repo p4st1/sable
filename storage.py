@@ -3,6 +3,7 @@
 world.json записывается последним, поэтому его наличие означает, что сохранение
 завершено. Чанк хранит свою палитру блоков и массив номеров в ней на всю высоту мира.
 """
+import io
 import json
 import os
 import shutil
@@ -111,13 +112,13 @@ def chunk_filename(chunk):
     return f"{chunk.chunk_x}_{chunk.chunk_z}.npz"
 
 
-def save_chunk(chunk, path):
+def chunk_arrays(chunk):
     """Чанк целиком массивом номеров своей палитры. Сжатый он занимает немного:
     в нём длинные одинаковые ряды воздуха и камня.
 
     В палитре вместе с типом хранится состояние: у дверей оно своё у каждой.
     Номера в палитре сохранения свои, а не номера block.PALETTE: те меняются от
-    запуска к запуску.
+    запуска к запуску (и у разных игроков в сетевой игре).
     """
     numbers = np.unique(chunk.ids)
     numbers = numbers[numbers != 0]
@@ -127,19 +128,39 @@ def save_chunk(chunk, path):
 
     palette = [PALETTE[number].key() for number in numbers.tolist()]
 
+    return {
+        "volume": local[chunk.ids],
+        "y_min": np.array(Y_MIN),
+        "palette": np.array(palette, dtype=str),
+    }
+
+
+def save_chunk(chunk, path):
     # Пишем во временный файл и подменяем целиком: падение на середине записи
     # не испортит предыдущую версию чанка.
     temporary = path.with_suffix(".tmp")
 
     with open(temporary, "wb") as file:
-        np.savez_compressed(
-            file,
-            volume=local[chunk.ids],
-            y_min=np.array(Y_MIN),
-            palette=np.array(palette, dtype=str)
-        )
+        np.savez_compressed(file, **chunk_arrays(chunk))
 
     os.replace(temporary, path)
+
+
+def encode_chunk(chunk):
+    """Чанк в байты для отправки по сети, в том же виде, что и на диске."""
+    buffer = io.BytesIO()
+    np.savez_compressed(buffer, **chunk_arrays(chunk))
+
+    return buffer.getvalue()
+
+
+def decode_chunk(data, chunk_x, chunk_z):
+    """Чанк из байтов encode_chunk. ValueError, если данные испорчены."""
+    try:
+        return read_chunk_file(io.BytesIO(data), chunk_x, chunk_z)
+
+    except (OSError, KeyError, zipfile.BadZipFile) as error:
+        raise ValueError(f"испорченный чанк: {error!r}")
 
 
 def block_from_key(key):
@@ -156,9 +177,14 @@ def block_from_key(key):
 
 def load_chunk(path):
     chunk_x, chunk_z = (int(value) for value in path.stem.split("_"))
+
+    return read_chunk_file(path, chunk_x, chunk_z)
+
+
+def read_chunk_file(file, chunk_x, chunk_z):
     chunk = Chunk(chunk_x, chunk_z)
 
-    with np.load(path, allow_pickle=False) as data:
+    with np.load(file, allow_pickle=False) as data:
         palette = data["palette"].tolist()
 
         if "volume" in data:
@@ -213,6 +239,21 @@ def read_chunk(name, chunk_x, chunk_z):
         return None
 
     return load_chunk(path)
+
+
+def saved_chunk_keys(name):
+    """Чанки, записанные на диск: они отличаются от того, что построил бы генератор."""
+    keys = set()
+
+    for path in (world_folder(name) / "chunks").glob("*.npz"):
+        try:
+            chunk_x, chunk_z = (int(value) for value in path.stem.split("_"))
+        except ValueError:
+            continue
+
+        keys.add((chunk_x, chunk_z))
+
+    return keys
 
 
 def clear_chunks(name):

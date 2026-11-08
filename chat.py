@@ -8,8 +8,6 @@ import pygame
 
 from gui import WHITE
 
-PLAYER_NAME = "Player"
-
 INPUT_LIMIT = 256
 HISTORY_LIMIT = 100
 MESSAGE_LIMIT = 100
