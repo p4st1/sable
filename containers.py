@@ -32,13 +32,13 @@ FUEL = {
 
 SMELTING = {
     "sand": "glass",
+    "clay_ball": "brick",
     "cobblestone": "stone",
     "oak_log": "charcoal",
     "birch_log": "charcoal",
     "spruce_log": "charcoal",
     "iron_ore": "iron_ingot",
     "gold_ore": "gold_ingot",
-    "clay": "bricks",
     "porkchop": "cooked_porkchop",
     "beef": "cooked_beef",
 }

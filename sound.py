@@ -31,7 +31,6 @@ MATERIALS = {
     "crafting_table": "wood",
     "chest": "wood",
     "oak_door": "wood",
-    "spruce_door": "wood",
     "netherrack": "netherrack",
     "snowy_grass": "grass",
     "birch_leaves": "grass",
@@ -53,6 +52,20 @@ MATERIALS = {
     "oak_sapling": "grass",
     "birch_sapling": "grass",
     "spruce_sapling": "grass",
+    "soul_sand": "sand",
+    "oak_stairs": "wood",
+    "oak_fence": "wood",
+    "fence_gate": "wood",
+    "bookshelf": "wood",
+    "ladder": "wood",
+    "oak_slab": "wood",
+    "double_oak_slab": "wood",
+    "glass_pane": "glass",
+    "sugar_cane": "grass",
+    "nether_wart": "grass",
+    "nether_wart_stage0": "grass",
+    "nether_wart_stage1": "grass",
+    "nether_portal": "glass",
 }
 DEFAULT_MATERIAL = "stone"
 
@@ -83,6 +96,8 @@ class Sounds:
         self.events = {}
         # Свои звуки пещер: собираются при первом страшном звуке (cave_sounds).
         self.cave_sounds = None
+        # Свои звуки ада по событиям (nether_sounds), пока их нет в паке.
+        self.synthesized = {}
         self.enabled = self.start_mixer()
 
         if self.enabled:
@@ -147,8 +162,24 @@ class Sounds:
         return []
 
     def has(self, event):
-        """Есть ли у события хоть один файл (своим или через замену)."""
-        return bool(self.files_for(event))
+        """Есть ли у события хоть один файл (своим или через замену) или свой синтезированный звук."""
+        import nether_sounds
+
+        return bool(self.files_for(event)) or event in nether_sounds.EVENTS
+
+    def synthesized_sound(self, event):
+        """Синтезированный звук события из nether_sounds или None."""
+        import nether_sounds
+
+        if event not in nether_sounds.EVENTS or not self.enabled:
+            return None
+
+        if event not in self.synthesized:
+            self.synthesized[event] = nether_sounds.make(event)
+
+        variants = self.synthesized[event]
+
+        return random.choice(variants) if variants else None
 
     def load(self, name):
         if name not in self.cache:
@@ -168,7 +199,9 @@ class Sounds:
         files = self.files_for(event)
 
         if not files:
-            return False
+            sound = self.synthesized_sound(event)
+
+            return sound is not None and self.play_sound(sound, volume, pan)
 
         sound = self.load(random.choice(files))
 
@@ -192,18 +225,20 @@ class Sounds:
 
         return True
 
-    def spatial(self, position, listener, volume):
-        """Громкость и сторона звука в точке мира, или None, если он не слышен."""
+    def spatial(self, position, listener, volume, reach=HEARING_DISTANCE):
+        """Громкость и сторона звука в точке мира, или None, если он не слышен.
+
+        reach: дальше этого звук не слышен (гаста и взрыв слышно издалека)."""
         x, y, z = position
         eye_x, eye_y, eye_z = listener.position
 
         dx, dy, dz = x - eye_x, y - eye_y, z - eye_z
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
-        if distance >= HEARING_DISTANCE:
+        if distance >= reach:
             return None
 
-        volume *= 1.0 - distance / HEARING_DISTANCE
+        volume *= 1.0 - distance / reach
 
         # Вектор "вправо" от взгляда, тот же, что у ходьбы стрейфом.
         yaw = listener.rotation[1]
@@ -217,9 +252,9 @@ class Sounds:
 
         return volume, pan
 
-    def play_at(self, event, position, listener, volume=1.0):
+    def play_at(self, event, position, listener, volume=1.0, reach=HEARING_DISTANCE):
         """Звук в точке мира: тише с расстоянием, громче в том ухе, с чьей он стороны."""
-        heard = self.spatial(position, listener, volume)
+        heard = self.spatial(position, listener, volume, reach)
 
         return heard is not None and self.play(event, *heard)
 

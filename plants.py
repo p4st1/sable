@@ -1,4 +1,9 @@
-"""Растения: цветы (роза и одуванчик) и саженцы дуба, берёзы и ели.
+"""Растения: цветы (роза и одуванчик), саженцы дуба, берёзы и ели, адский нарост
+и тростник.
+
+Тростник растёт у воды: на траве, земле или песке, рядом с которыми по
+бокам есть вода, или на другом тростнике. Сам дорастает до трёх блоков, а без
+воды рядом или без опоры ломается.
 
 Растения рисуются крестом из двух плоскостей, сквозь них ходят, и стоят они
 только на траве или земле. Цветы растут на равнинах и в лесах при генерации
@@ -16,8 +21,23 @@ PLANTS = {
     "oak_sapling": "oak_sapling.png",
     "birch_sapling": "birch_sapling.png",
     "spruce_sapling": "spruce_sapling.png",
+    # Адский нарост растёт в три стадии; предмет и спелый куст называются одинаково.
+    "nether_wart_stage0": "nether_wart_stage0.png",
+    "nether_wart_stage1": "nether_wart_stage1.png",
+    "nether_wart": "nether_wart_stage2.png",
+    "sugar_cane": "sugar_cane.png",
 }
+CANE = "sugar_cane"
+CANE_GROUND = {"grass", "dirt", "sand"}
+# Тростник дорастает до стольких блоков, новый блок в среднем за столько секунд.
+CANE_HEIGHT = 3
+CANE_GROW_TIME = 600.0
+CANE_BOX = ((0.125, 0.0, 0.125), (0.875, 1.0, 0.875))
 FLOWERS = {"rose", "dandelion"}
+WART_STAGES = ("nether_wart_stage0", "nether_wart_stage1", "nether_wart")
+WARTS = set(WART_STAGES)
+# Что ставится в мир из предмета, если не он сам.
+PLACED = {"nether_wart": "nether_wart_stage0"}
 SAPLINGS = {"oak_sapling", "birch_sapling", "spruce_sapling"}
 
 NAMES = {
@@ -26,10 +46,13 @@ NAMES = {
     "oak_sapling": "Oak Sapling",
     "birch_sapling": "Birch Sapling",
     "spruce_sapling": "Spruce Sapling",
+    "nether_wart": "Nether Wart",
+    "sugar_cane": "Sugar Canes",
 }
 
-# На чём растения стоят.
+# На чём растения стоят. Нарост только на песке душ.
 GROUND = {"grass", "dirt", "snowy_grass"}
+WART_GROUND = {"soul_sand"}
 
 # Коробки для луча и трещин (ось Y вниз, низ клетки это y = 1).
 FLOWER_BOX = ((0.3, 0.4, 0.3), (0.7, 1.0, 0.7))
@@ -41,6 +64,10 @@ CROSS_INSET = 0.05
 # Рост: в среднем через столько секунд при свете не ниже GROW_LIGHT.
 GROW_TIME = 300.0
 GROW_LIGHT = 9
+# Нарост растёт в темноте и в любом измерении: стадия в среднем за столько секунд.
+WART_GROW_TIME = 120.0
+# Спелый нарост даёт столько наростов, незрелый один.
+WART_HARVEST = (2, 4)
 
 # Дерево из саженца: порода, бревно, листва и высота ствола.
 TREES = {
@@ -63,15 +90,68 @@ def is_plant(block_type):
 
 
 def plant_box(block_type):
+    if block_type == CANE:
+        return CANE_BOX
+
     return FLOWER_BOX if block_type in FLOWERS else SAPLING_BOX
+
+
+def cane_supported(world, x, y, z):
+    """Может ли стоять тростник в клетке: на тростнике или на земле у воды (ось Y вниз)."""
+    below = world.get_block(x, y + 1, z)
+
+    if below is None:
+        return False
+
+    if below.type == CANE:
+        return True
+
+    if below.type not in CANE_GROUND:
+        return False
+
+    return any(
+        (side := world.get_block(x + dx, y + 1, z + dz)) is not None and side.type == "water"
+        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1))
+    )
+
+
+def cane_height(world, x, y, z):
+    """Сколько блоков тростника в столбике до клетки (x, y, z) включительно, снизу."""
+    count = 0
+
+    while (block := world.get_block(x, y, z)) is not None and block.type == CANE:
+        count += 1
+        y += 1
+
+    return count
 
 
 def plant_texture(block_type):
     return BLOCK_TEXTURES + PLANTS[block_type]
 
 
-def can_stand_on(ground):
-    return ground is not None and ground.type in GROUND
+def placed_type(item):
+    """Блок, который появляется в мире из предмета растения."""
+    return PLACED.get(item, item)
+
+
+def can_stand_on(ground, plant=None):
+    if ground is None:
+        return False
+
+    return ground.type in (WART_GROUND if plant in WARTS else GROUND)
+
+
+def next_stage(block_type):
+    """Следующая стадия нароста или None у спелого."""
+    if block_type not in WARTS or block_type == WART_STAGES[-1]:
+        return None
+
+    return WART_STAGES[WART_STAGES.index(block_type) + 1]
+
+
+def wart_harvest(block_type, rng=random):
+    return rng.randint(*WART_HARVEST) if block_type == WART_STAGES[-1] else 1
 
 
 def grow_tree(world, x, y, z, sapling, rng=random):

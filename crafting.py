@@ -47,13 +47,49 @@ RECIPES = (
     Shaped(("##", "##"), {"#": PLANKS}, "crafting_table"),
     Shaped(("###", "# #", "###"), {"#": PLANKS}, "chest"),
     Shaped(("###", "# #", "###"), {"#": STONES}, "furnace"),
-    Shaped(("##", "##", "##"), {"#": "oak_planks"}, "oak_door", 3),
-    Shaped(("##", "##", "##"), {"#": "spruce_planks"}, "spruce_door", 3),
+    # В 1.0 дверь одна, деревянная: из любых досок.
+    Shaped(("##", "##", "##"), {"#": PLANKS}, "oak_door", 3),
     Shaped(("##", "##"), {"#": "sand"}, "sandstone"),
     Shaped(("###", "PPP"), {"#": "white_wool", "P": PLANKS}, "bed"),
     Shaped((" #S", "# S", " #S"), {"#": "stick", "S": "string"}, "bow"),
     Shaped(("I ", " F"), {"I": "iron_ingot", "F": "flint"}, "flint_and_steel"),
+    Shaped(("# #", " # "), {"#": "iron_ingot"}, "bucket"),
+    # Глина и кирпичи: комки обжигаются в печке в кирпич, четыре кирпича дают блок.
+    Shaped(("##", "##"), {"#": "clay_ball"}, "clay"),
+    Shaped(("##", "##"), {"#": "brick"}, "bricks"),
+    # Блоки металлов и алмазов и обратно, как в 1.0.
+    *(
+        recipe
+        for item, block in (("gold_ingot", "gold_block"), ("iron_ingot", "iron_block"), ("diamond", "diamond_block"))
+        for recipe in (Shaped(("###", "###", "###"), {"#": item}, block), Shapeless((block,), item, 9))
+    ),
+    Shaped(("# #", "###", "# #"), {"#": "stick"}, "ladder", 2),
+    Shaped(("###", "###"), {"#": "glass"}, "glass_pane", 16),
+    Shaped(("###", "###"), {"#": "iron_ingot"}, "iron_bars", 16),
+    # Плиты: три блока в ряд дают три плиты, как в 1.0.
+    Shaped(("###",), {"#": "stone"}, "stone_slab", 3),
+    Shaped(("###",), {"#": "sandstone"}, "sandstone_slab", 3),
+    Shaped(("###",), {"#": PLANKS}, "oak_slab", 3),
+    Shaped(("###",), {"#": "cobblestone"}, "cobblestone_slab", 3),
+    Shaped(("###",), {"#": "bricks"}, "brick_slab", 3),
+    Shaped(("###",), {"#": "stone_bricks"}, "stone_brick_slab", 3),
     Shaped(("#", "|"), {"#": frozenset({"coal", "charcoal"}), "|": "stick"}, "torch", 4),
+    # Для построек, как в 1.0: ступенек выходит четыре, забора два.
+    Shaped(("#  ", "## ", "###"), {"#": PLANKS}, "oak_stairs", 4),
+    Shaped(("#  ", "## ", "###"), {"#": STONES}, "cobblestone_stairs", 4),
+    Shaped(("###", "###"), {"#": "stick"}, "oak_fence", 2),
+    Shaped(("#  ", "## ", "###"), {"#": "bricks"}, "brick_stairs", 4),
+    Shaped(("#  ", "## ", "###"), {"#": "stone_bricks"}, "stone_brick_stairs", 4),
+    Shaped(("|#|", "|#|"), {"|": "stick", "#": PLANKS}, "fence_gate"),
+    # Как в 1.0: книга из трёх листов бумаги, без кожи.
+    Shaped(("###",), {"#": "sugar_cane"}, "paper", 3),
+    Shaped(("#", "#", "#"), {"#": "paper"}, "book"),
+    Shaped(("###", "BBB", "###"), {"#": PLANKS, "B": "book"}, "bookshelf"),
+    Shaped(("##", "##"), {"#": "stone"}, "stone_bricks", 4),
+    # Ад: светокамень из пыли и золото из самородков, как в 1.0.
+    Shaped(("##", "##"), {"#": "glowstone_dust"}, "glowstone"),
+    Shaped(("###", "###", "###"), {"#": "gold_nugget"}, "gold_ingot"),
+    Shapeless(("gold_ingot",), "gold_nugget", 9),
     *tools(PLANKS, "wooden"),
     *tools(STONES, "stone"),
     *tools("iron_ingot", "iron"),

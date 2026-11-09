@@ -7,6 +7,9 @@ from door import DEFAULT_STATE, DOORS, DoorState, door_box
 from plants import PLANTS, plant_box
 from fire import BOX as FIRE_BOX
 from fire import FIRE
+from portal import PORTAL, PortalState, portal_box
+import shapes
+from shapes import GateState, LadderState, StairState
 from textures import texture_path
 
 FACES = {
@@ -120,7 +123,7 @@ MAX_LIGHT = 15
 DIMMING = {"oak_leaves", "birch_leaves", "spruce_leaves", "water"}
 
 # Сколько света даёт блок сам. У печки только горящей, см. light_emission.
-EMISSION = {"torch": 14, "glowstone": 15, "fire": 15, "lava": 15}
+EMISSION = {"torch": 14, "glowstone": 15, "fire": 15, "lava": 15, PORTAL: 11}
 LIT_FURNACE_LIGHT = 13
 
 # Кубы с дырками в текстуре: сквозь них видны соседние грани.
@@ -204,6 +207,18 @@ def default_state(block_type):
     if block_type in LIQUIDS:
         return SOURCE
 
+    if block_type == PORTAL:
+        return PortalState()
+
+    if block_type in shapes.STAIRS:
+        return shapes.DEFAULT_STAIRS
+
+    if block_type in shapes.GATES:
+        return shapes.DEFAULT_GATE
+
+    if block_type in shapes.LADDERS:
+        return shapes.DEFAULT_LADDER
+
     return None
 
 
@@ -216,6 +231,18 @@ def decode_state(block_type, text):
 
     if block_type in LIQUIDS:
         return WaterState.decode(text)
+
+    if block_type == PORTAL:
+        return PortalState.decode(text)
+
+    if block_type in shapes.STAIRS:
+        return StairState.decode(text)
+
+    if block_type in shapes.GATES:
+        return GateState.decode(text)
+
+    if block_type in shapes.LADDERS:
+        return LadderState.decode(text)
 
     return FacingState.decode(text)
 
@@ -233,6 +260,7 @@ class Block:
         return (
             self.type not in DOORS and self.type not in LIQUIDS and self.type not in TORCHES
             and self.type not in BEDS and self.type not in PLANTS and self.type != FIRE
+            and self.type != PORTAL and not shapes.is_shaped(self.type)
         )
 
     @property
@@ -242,7 +270,10 @@ class Block:
     @property
     def is_solid(self):
         """Твёрдый блок упирается в игрока и предметы. Сквозь факел и растения проходят."""
-        return self.type not in LIQUIDS and self.type not in TORCHES and self.type not in PLANTS and self.type != FIRE
+        return (
+            self.type not in LIQUIDS and self.type not in TORCHES and self.type not in PLANTS
+            and self.type != FIRE and self.type != PORTAL
+        )
 
     @property
     def light_opacity(self):
@@ -286,13 +317,32 @@ class Block:
         if self.type == FIRE:
             return FIRE_BOX
 
+        if self.type == PORTAL:
+            return portal_box(self.state)
+
+        # Ступеньки и забор выделяются целым блоком, как в 1.0, плита и лестница своей формой.
+        if shapes.is_shaped(self.type):
+            return shapes.selection_box(self)
+
         return TORCH_BOX if self.type in TORCHES else CUBE_BOX
+
+    def boxes(self, world=None, cell=None):
+        """Коробки, в которые упирается тело: у ступенек две, у забора высокая.
+
+        Панели тянутся к соседям, поэтому им нужны мир и клетка."""
+        if shapes.is_shaped(self.type):
+            return shapes.collision_boxes(self, world, cell)
+
+        return [self.box()]
 
     def key(self):
         """Строка для палитры сохранения: тип и, если есть, состояние."""
         return self.type if self.state is None else f"{self.type}|{self.state.encode()}"
 
     def get_block_texture(block, face):
+        if shapes.is_shaped(block.type):
+            return shapes.texture(block.type, face)
+
         textures = BLOCKS[block.type]
 
         # У печки и сундука лицо там, куда они повёрнуты, остальные бока одинаковые.
@@ -306,13 +356,14 @@ class Block:
 
 
 # Блоки, которых больше нет в игре, и чем они становятся в старых сохранениях.
-REMOVED = {"granite": "stone", "diorite": "stone", "andesite": "stone"}
+REMOVED = {"granite": "stone", "diorite": "stone", "andesite": "stone", "spruce_door": "oak_door"}
 
 
 def is_known_type(block_type):
     return (
         block_type in BLOCKS or block_type in DOORS or block_type in LIQUIDS
         or block_type in TORCHES or block_type in BEDS or block_type in PLANTS or block_type == FIRE
+        or block_type == PORTAL or shapes.is_shaped(block_type)
     )
 
 
@@ -346,6 +397,13 @@ def type_id(block_type):
 def ids_where(predicate):
     """Номера всех уже встречавшихся блоков, для которых predicate(block) истинно."""
     return [number for number, block in enumerate(PALETTE) if block is not None and predicate(block)]
+
+
+def double_slab(slab):
+    """Две плиты одна на другой: целый блок с текстурами плиты."""
+    top, side, _ = shapes.SLABS[slab]
+
+    return {**all_sides(side), "top": top, "bottom": top}
 
 
 def all_sides(texture):
@@ -416,6 +474,18 @@ BLOCKS = {
     "bedrock": all_sides("bedrock.png"),
     "glowstone": all_sides("glowstone.png"),
     "obsidian": all_sides("obsidian.png"),
+    "stone_bricks": all_sides("stone_bricks.png"),
+    # Замшелые и треснувшие бывают только в постройках мира, рецепта нет, как в 1.0.
+    "mossy_stone_bricks": all_sides("mossy_stone_bricks.png"),
+    "cracked_stone_bricks": all_sides("cracked_stone_bricks.png"),
+    "bookshelf": column("bookshelf.png", "oak_planks.png"),
+    "gold_block": all_sides("gold_block.png"),
+    "iron_block": all_sides("iron_block.png"),
+    "diamond_block": all_sides("diamond_block.png"),
+
+    # Ад.
+    "soul_sand": all_sides("soul_sand.png"),
+    "nether_bricks": all_sides("nether_bricks.png"),
     "white_wool": all_sides("white_wool.png"),
 
     "coal_ore": all_sides("coal_ore.png"),
@@ -430,3 +500,7 @@ BLOCKS = {
     "spruce_leaves": all_sides("generated:spruce_leaves"),
     "spruce_planks": all_sides("spruce_planks.png"),
 }
+
+# Двойные плиты: их не бывает в инвентаре, они получаются из двух плит.
+for _slab, (_, _, _double) in shapes.SLABS.items():
+    BLOCKS[_double] = double_slab(_slab)

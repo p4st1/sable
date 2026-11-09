@@ -227,7 +227,7 @@ class Renderer:
         fog_color = tuple(int(channel * fog_light) for channel in (UNDERWATER_COLOR if underwater else self.fog_color(camera, sky)))
         alpha_mask = screen.get_masks()[3]
 
-        if not underwater:
+        if not underwater and sky.celestial:
             self.draw_celestial(pixels, camera_matrix, focal_length, camera.near, sky, fog_light, alpha_mask)
         eye_x, eye_y, eye_z = camera.position
 
@@ -251,16 +251,22 @@ class Renderer:
 
         water.sort(key=lambda pair: -pair[0])
 
-        if water:
+        if any(getattr(object, "opacity", None) is None for _, object in water):
             frames = self.load_water_frames()
             water_pixels = frames[int(time.perf_counter() * WATER_FPS) % len(frames)]
 
         opaque = [(object, 256) for object in [*world.objects, *extra] if visible(object) is not None]
 
-        for object, opacity in opaque + [(object, WATER_OPACITY) for _, object in water]:
+        # У полупрозрачных объектов, кроме воды, своя текстура и своя непрозрачность (портал).
+        translucent = [(object, getattr(object, "opacity", WATER_OPACITY)) for _, object in water]
+
+        for object, opacity in opaque + translucent:
             self.visible_objects += 1
 
-            if opacity < 256:
+            if opacity < 256 and getattr(object, "opacity", None) is not None:
+                texture_pixels = self.texture_arrays[id(object.mesh.texture)]
+                texture_alpha = None
+            elif opacity < 256:
                 texture_pixels = water_pixels
                 texture_alpha = None
             else:

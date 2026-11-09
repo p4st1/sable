@@ -37,6 +37,8 @@ class Sky(NamedTuple):
     glow: float
     stars: float
     moon_phase: int
+    # Есть ли солнце, луна и звёзды. В аду их нет.
+    celestial: bool = True
 
 
 def celestial_angle(time):

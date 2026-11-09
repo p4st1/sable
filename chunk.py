@@ -14,6 +14,8 @@ from block import MAX_LIGHT, PALETTE, TORCH_BOX, TORCH_TEXTURE, TORCHES, Block, 
 from bed import BED_TEXTURE, BEDS, bed_parts
 from plants import CROSS_INSET, PLANTS, plant_texture
 from fire import FIRE, FIRE_TEXTURE
+from portal import PORTAL, PORTAL_TEXTURE, portal_box
+import shapes
 from door import DOORS, door_box, door_texture, door_uv
 from textures import texture_path
 
@@ -94,6 +96,24 @@ NIGHT_BRIGHTNESS = np.array(
     [BRIGHTNESS[max((value & 15) - NIGHT_DARKNESS, value >> 4, 0)] for value in range(256)],
     dtype=np.float64
 )
+
+
+def set_lighting(ambient=AMBIENT, night=True):
+    """Кривая яркости измерения: в аду темнота светлее, а ночи нет.
+
+    Таблицы меняются на месте: их уже импортировали другие модули. Меши после
+    этого нужно строить заново (при смене измерения они и так новые).
+    """
+    def curve(level):
+        dark = 1 - level / MAX_LIGHT
+        mixed = 0.6 * (1 - dark) / (dark * 3 + 1) + 0.4 * level / MAX_LIGHT
+
+        return ambient + (1 - ambient) * mixed
+
+    BRIGHTNESS[:] = [curve(level) for level in range(MAX_LIGHT + 1)]
+    PACKED_BRIGHTNESS[:] = [BRIGHTNESS[max(value & 15, value >> 4)] for value in range(256)]
+    darkness = NIGHT_DARKNESS if night else 0
+    NIGHT_BRIGHTNESS[:] = [BRIGHTNESS[max((value & 15) - darkness, value >> 4, 0)] for value in range(256)]
 
 
 def packed_shades(packed):
@@ -271,6 +291,34 @@ def add_box(mesh_data, texture, low, high, position, uv_of, shade_of, hidden=())
         data["uvs"].append((uvs[0], uvs[2], uvs[3]))
 
 
+def merge_meshes(cubes, models):
+    """Меш кубов и меш моделей по текстурам в одно; номера вершин моделей сдвигаются."""
+    for texture, data in models.items():
+        if texture not in cubes:
+            cubes[texture] = data
+            continue
+
+        base = cubes[texture]
+        offset = len(base["points"])
+        cubes[texture] = {
+            "points": np.concatenate([np.asarray(base["points"], dtype=np.float32), np.asarray(data["points"], dtype=np.float32).reshape(-1, 3)]),
+            "triangles": np.concatenate([np.asarray(base["triangles"], dtype=np.int32), np.asarray(data["triangles"], dtype=np.int32).reshape(-1, 3) + offset]),
+            "uvs": np.concatenate([np.asarray(base["uvs"], dtype=np.float32), np.asarray(data["uvs"], dtype=np.float32).reshape(-1, 3, 2)]),
+            "shades": np.concatenate([np.asarray(base["shades"], dtype=np.float32), np.asarray(data["shades"], dtype=np.float32)]),
+            "night_shades": np.concatenate([np.asarray(base["night_shades"], dtype=np.float32), np.asarray(data["night_shades"], dtype=np.float32)]),
+        }
+
+    return cubes
+
+
+# Грань меша, обращённая к соседу с этим смещением, и к стороне света.
+FACE_OFFSETS = {
+    "top": (0, -1, 0), "bottom": (0, 1, 0), "front": (0, 0, 1),
+    "back": (0, 0, -1), "right": (1, 0, 0), "left": (-1, 0, 0),
+}
+SIDE_TO_FACE = {"north": "back", "south": "front", "west": "left", "east": "right"}
+
+
 def cell_uv(face, x, y, z):
     """UV точки грани по её координатам внутри клетки, в тех же направлениях, что у блоков."""
     if face == "top":
@@ -421,13 +469,33 @@ class Chunk:
             volume, self.light, cube, opaque, kind, face_tex, PACKED_BRIGHTNESS, FACE_SHADES, smooth_lighting,
             NIGHT_BRIGHTNESS
         )
-        mesh_data = quads_to_mesh(quads, shades, night_shades, top + 1)
+        cube_data = quads_to_mesh(quads, shades, night_shades, top + 1)
+        # Модели (двери, ступеньки, забор) собираются отдельно: текстура у них может
+        # совпасть с текстурой кубов, а там массивы, а не списки. Потом сливаем.
+        mesh_data = {}
 
-        models = lambda block: block.type in DOORS or block.type in TORCHES or block.type in BEDS or block.type in PLANTS or block.type == FIRE
+        models = lambda block: (
+            block.type in DOORS or block.type in TORCHES or block.type in BEDS or block.type in PLANTS
+            or block.type == FIRE or block.type == PORTAL or shapes.is_shaped(block.type)
+        )
 
         for (x, y, z), block in self.cells(ids_where(models)):
             if block.type in TORCHES:
                 self.add_torch(mesh_data, x, y, z)
+            elif block.type == PORTAL:
+                self.add_portal(mesh_data, world, x, y, z, block)
+            elif shapes.is_stairs(block.type):
+                self.add_stairs(mesh_data, world, x, y, z, block)
+            elif shapes.is_fence(block.type):
+                self.add_fence(mesh_data, world, x, y, z, block)
+            elif shapes.is_gate(block.type):
+                self.add_gate(mesh_data, x, y, z, block)
+            elif shapes.is_slab(block.type):
+                self.add_slab(mesh_data, world, x, y, z, block)
+            elif shapes.is_ladder(block.type):
+                self.add_ladder(mesh_data, x, y, z, block)
+            elif shapes.is_pane(block.type):
+                self.add_pane(mesh_data, world, x, y, z, block)
             elif block.type in PLANTS:
                 self.add_plant(mesh_data, x, y, z, block)
             elif block.type == FIRE:
@@ -437,7 +505,7 @@ class Chunk:
             else:
                 self.add_door(mesh_data, world, x, y, z, block)
 
-        return mesh_data
+        return merge_meshes(cube_data, mesh_data)
 
     def flat_shade(self, x, y, z):
         """Яркость грани модели в клетке днём и ночью: свет самой клетки и множитель стороны."""
@@ -475,6 +543,145 @@ class Chunk:
             for a, b, c in ((0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)):
                 data["triangles"].append((start + a, start + b, start + c))
                 data["uvs"].append((uvs[a], uvs[b], uvs[c]))
+
+    def add_portal(self, mesh_data, world, x, y, z, block):
+        """Пластина портала: две широкие грани и торцы там, где портал кончается.
+
+        Портал светится сам и рисуется полупрозрачным (см. Game.build_chunk).
+        """
+        low, high = portal_box(block.state)
+        along = (1, 0) if block.state.axis == "x" else (0, 1)
+        world_x = self.chunk_x * self.SIZE + x
+        world_z = self.chunk_z * self.SIZE + z
+        hidden = set()
+
+        # Между соседними блоками портала торцы не нужны.
+        neighbours = {
+            "top": (0, -1, 0), "bottom": (0, 1, 0),
+            ("right" if along[0] else "front"): (along[0], 0, along[1]),
+            ("left" if along[0] else "back"): (-along[0], 0, -along[1]),
+        }
+
+        for face, (dx, dy, dz) in neighbours.items():
+            neighbour = world.get_block(world_x + dx, y + dy, world_z + dz)
+
+            if neighbour is not None and (neighbour.type == PORTAL or neighbour.is_opaque):
+                hidden.add(face)
+
+        add_box(mesh_data, PORTAL_TEXTURE, low, high, (x, y, z), cell_uv, lambda face: (1.0, 1.0), hidden)
+
+    def neighbour(self, world, x, y, z, dx, dy, dz):
+        return world.get_block(self.chunk_x * self.SIZE + x + dx, y + dy, self.chunk_z * self.SIZE + z + dz)
+
+    def add_stairs(self, mesh_data, world, x, y, z, block):
+        """Ступеньки: плита и верхняя половина. Грани к непрозрачным соседям не рисуем."""
+        texture = shapes.texture(block.type)
+        shade = self.flat_shade(x, y, z)
+        slab, upper = shapes.stair_boxes(block.state)
+        face_offsets = {
+            "top": (0, -1, 0), "bottom": (0, 1, 0), "front": (0, 0, 1),
+            "back": (0, 0, -1), "right": (1, 0, 0), "left": (-1, 0, 0),
+        }
+
+        def covered(face):
+            neighbour = self.neighbour(world, x, y, z, *face_offsets[face])
+            return neighbour is not None and neighbour.is_opaque
+
+        # Боковые грани плиты на краю клетки, низ тоже.
+        hidden = {face for face in ("bottom", "front", "back", "right", "left") if covered(face)}
+        add_box(mesh_data, texture, *slab, (x, y, z), cell_uv, shade, hidden)
+
+        # Верх: грань сверху, задняя у края клетки и боковые; низ всегда внутри плиты.
+        back = {"north": "back", "south": "front", "west": "left", "east": "right"}[block.state.facing]
+        hidden = {"bottom"} | {face for face in ("top", back) if covered(face)}
+        sides = {"front", "back", "left", "right"} - {back, {"back": "front", "front": "back", "left": "right", "right": "left"}[back]}
+        hidden |= {face for face in sides if covered(face)}
+        add_box(mesh_data, texture, *upper, (x, y, z), cell_uv, shade, hidden)
+
+    def add_fence(self, mesh_data, world, x, y, z, block):
+        """Забор: столбик и перекладины к соседним заборам."""
+        connected = []
+
+        for side, (dx, dz) in shapes.OFFSETS.items():
+            neighbour = self.neighbour(world, x, y, z, dx, 0, dz)
+
+            if shapes.connects(neighbour, side):
+                connected.append(side)
+
+        texture = shapes.texture(block.type)
+        shade = self.flat_shade(x, y, z)
+
+        for low, high in shapes.fence_parts(connected):
+            add_box(mesh_data, texture, low, high, (x, y, z), cell_uv, shade)
+
+    def add_slab(self, mesh_data, world, x, y, z, block):
+        """Плита: верх и низ своей текстурой, бока своей. Грани к непрозрачным соседям не нужны."""
+        shade = self.flat_shade(x, y, z)
+        hidden = set()
+
+        for face, offset in FACE_OFFSETS.items():
+            if face == "top":
+                continue
+
+            neighbour = self.neighbour(world, x, y, z, *offset)
+
+            if neighbour is not None and neighbour.is_opaque:
+                hidden.add(face)
+
+        sides = {"front", "back", "left", "right"}
+        add_box(mesh_data, shapes.texture(block.type, "top"), *shapes.SLAB_BOX, (x, y, z), cell_uv, shade, hidden | sides)
+        add_box(mesh_data, shapes.texture(block.type, "side"), *shapes.SLAB_BOX, (x, y, z), cell_uv, shade, hidden | {"top", "bottom"})
+
+    def add_ladder(self, mesh_data, x, y, z, block):
+        """Лестница: тонкая доска у стены, к стене грань не рисуем."""
+        wall = SIDE_TO_FACE[block.state.facing]
+        add_box(mesh_data, shapes.texture(block.type), *shapes.ladder_box(block.state), (x, y, z), cell_uv, self.flat_shade(x, y, z), {wall})
+
+    def add_pane(self, mesh_data, world, x, y, z, block):
+        """Панель: середина и рукава к соседям. Внутренние грани не рисуем, иначе
+        на стыках стекла видны полосы торцов."""
+        world_cell = (self.chunk_x * self.SIZE + x, y, self.chunk_z * self.SIZE + z)
+        sides = shapes.pane_sides(world, world_cell)
+        flat = shapes.texture(block.type)
+        edge = shapes.texture(block.type, "edge")
+        shade = self.flat_shade(x, y, z)
+
+        above = self.neighbour(world, x, y, z, 0, -1, 0)
+        below = self.neighbour(world, x, y, z, 0, 1, 0)
+        caps = set()
+
+        if above is not None and (above.type == block.type or above.is_opaque):
+            caps.add("top")
+
+        if below is not None and (below.type == block.type or below.is_opaque):
+            caps.add("bottom")
+
+        low, high = shapes.PANE_LOW, shapes.PANE_HIGH
+        all_sides = {"front", "back", "left", "right"}
+
+        # Середина: торцы сверху и снизу, бока стеклом там, куда нет рукава.
+        center = ((low, 0.0, low), (high, 1.0, high))
+        covered = {SIDE_TO_FACE[side] for side in sides}
+        add_box(mesh_data, edge, *center, (x, y, z), cell_uv, shade, all_sides | caps)
+        add_box(mesh_data, flat, *center, (x, y, z), cell_uv, shade, covered | {"top", "bottom"})
+
+        for side, box in zip(sides, shapes.pane_boxes(sides)[1:]):
+            outer = SIDE_TO_FACE[side]
+            inner = SIDE_TO_FACE[{"north": "south", "south": "north", "west": "east", "east": "west"}[side]]
+            dx, dz = shapes.OFFSETS[side]
+            long_faces = {"front", "back"} if dx else {"left", "right"}
+            neighbour = self.neighbour(world, x, y, z, dx, 0, dz)
+            end_hidden = {outer} if shapes.pane_attaches(neighbour) else set()
+
+            add_box(mesh_data, flat, *box, (x, y, z), cell_uv, shade, all_sides - long_faces | {"top", "bottom"})
+            add_box(mesh_data, edge, *box, (x, y, z), cell_uv, shade, long_faces | {inner} | end_hidden | caps)
+
+    def add_gate(self, mesh_data, x, y, z, block):
+        texture = shapes.texture(block.type)
+        shade = self.flat_shade(x, y, z)
+
+        for low, high in shapes.gate_boxes(block.state):
+            add_box(mesh_data, texture, low, high, (x, y, z), cell_uv, shade)
 
     def add_plant(self, mesh_data, x, y, z, block):
         """Растение крестом: две диагональные плоскости, видные с обеих сторон."""

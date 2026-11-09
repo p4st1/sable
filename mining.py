@@ -23,7 +23,6 @@ HARDNESS = {
     "crafting_table": 2.5,
     "chest": 2.5,
     "oak_door": 3.0,
-    "spruce_door": 3.0,
     "stone": 1.5,
     "cobblestone": 2.0,
     "bricks": 2.0,
@@ -60,21 +59,48 @@ HARDNESS = {
     "oak_sapling": 0.01,
     "birch_sapling": 0.01,
     "spruce_sapling": 0.01,
+    "soul_sand": 0.5,
+    "stone_bricks": 1.5,
+    "oak_stairs": 2.0,
+    "cobblestone_stairs": 2.0,
+    "oak_fence": 2.0,
+    "fence_gate": 2.0,
+    "bookshelf": 1.5,
+    "gold_block": 3.0,
+    "iron_block": 5.0,
+    "diamond_block": 5.0,
+    "ladder": 0.4,
+    "glass_pane": 0.3,
+    "iron_bars": 5.0,
+    **{slab: 2.0 for slab in ("stone_slab", "sandstone_slab", "oak_slab", "cobblestone_slab", "brick_slab", "stone_brick_slab")},
+    **{double: 2.0 for double in ("double_stone_slab", "double_sandstone_slab", "double_oak_slab", "double_cobblestone_slab", "double_brick_slab", "double_stone_brick_slab")},
+    "sugar_cane": 0.01,
+    "brick_stairs": 2.0,
+    "stone_brick_stairs": 1.5,
+    "mossy_stone_bricks": 1.5,
+    "cracked_stone_bricks": 1.5,
+    "nether_bricks": 2.0,
+    "nether_wart": 0.01,
+    "nether_wart_stage0": 0.01,
+    "nether_wart_stage1": 0.01,
 }
 
 # Коренную породу не сломать ничем: в выживании это дно мира.
-UNBREAKABLE = {"bedrock"}
+UNBREAKABLE = {"bedrock", "nether_portal"}
 DEFAULT_HARDNESS = 1.0
 
 # Каменным блокам нужна кирка, а рудам ещё и достаточно прочная (см. Tool.level).
 NEEDS_PICKAXE = {
     "stone", "cobblestone", "bricks", "furnace", "netherrack", "sandstone",
-    "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "obsidian",
+    "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "obsidian", "nether_bricks",
+    "stone_bricks", "cobblestone_stairs", "brick_stairs", "stone_brick_stairs",
+    "mossy_stone_bricks", "cracked_stone_bricks", "gold_block", "iron_block", "diamond_block", "iron_bars",
+    "stone_slab", "sandstone_slab", "cobblestone_slab", "brick_slab", "stone_brick_slab", "double_stone_slab", "double_sandstone_slab", "double_cobblestone_slab", "double_brick_slab", "double_stone_brick_slab",
 }
 
 # Какой уровень кирки нужен, как в оригинале: железную руду добывает каменная,
 # золотую и алмазную железная. Остальному хватает деревянной.
-HARVEST_LEVEL = {"iron_ore": 1, "gold_ore": 2, "diamond_ore": 2, "obsidian": 3}
+HARVEST_LEVEL = {"iron_ore": 1, "gold_ore": 2, "diamond_ore": 2, "obsidian": 3, "iron_block": 1, "gold_block": 2, "diamond_block": 2}
 
 LEAVES = {"oak_leaves", "birch_leaves", "spruce_leaves"}
 
@@ -98,10 +124,10 @@ FACES = ("top", "bottom", "front", "back", "right", "left")
 EFFECTIVE = {
     "pickaxe": NEEDS_PICKAXE,
     "axe": {
-        "oak_planks", "oak_log", "crafting_table", "chest", "oak_door", "spruce_door",
-        "birch_log", "birch_planks", "spruce_log", "spruce_planks",
+        "oak_planks", "oak_log", "crafting_table", "chest", "oak_door",
+        "birch_log", "birch_planks", "spruce_log", "spruce_planks", "oak_stairs", "oak_fence", "fence_gate", "bookshelf", "ladder", "oak_slab", "double_oak_slab",
     },
-    "shovel": {"grass", "dirt", "sand", "snowy_grass", "snow", "gravel", "clay"},
+    "shovel": {"grass", "dirt", "sand", "snowy_grass", "snow", "gravel", "clay", "soul_sand"},
     "sword": LEAVES | {"cactus"},
 }
 

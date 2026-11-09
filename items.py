@@ -12,6 +12,7 @@ import armor
 import plants
 from bed import BED_ICON, BEDS
 from door import DOORS, is_door
+import shapes
 
 ITEM_TEXTURES = 'assets/minecraft/textures/item/'
 MAX_STACK = 64
@@ -32,7 +33,6 @@ NAMES = {
     "furnace": "Furnace",
     "chest": "Chest",
     "oak_door": "Oak Door",
-    "spruce_door": "Spruce Door",
     "stick": "Stick",
     "charcoal": "Charcoal",
     "danilEfail": "danilEfail",
@@ -108,6 +108,43 @@ NAMES = {
     "white_wool": "White Wool",
     "bed": "Bed",
     **plants.NAMES,
+
+    # Ад.
+    "soul_sand": "Soul Sand",
+    "nether_bricks": "Nether Brick",
+    "glowstone_dust": "Glowstone Dust",
+    "gold_nugget": "Gold Nugget",
+    "gunpowder": "Gunpowder",
+    "ghast_tear": "Ghast Tear",
+    "blaze_rod": "Blaze Rod",
+
+    # Для построек.
+    "stone_bricks": "Stone Bricks",
+    "mossy_stone_bricks": "Mossy Stone Bricks",
+    "cracked_stone_bricks": "Cracked Stone Bricks",
+    "oak_stairs": "Wooden Stairs",
+    "cobblestone_stairs": "Stone Stairs",
+    "brick_stairs": "Brick Stairs",
+    "stone_brick_stairs": "Stone Brick Stairs",
+    "oak_fence": "Fence",
+    "fence_gate": "Fence Gate",
+    "bookshelf": "Bookshelf",
+    "gold_block": "Block of Gold",
+    "iron_block": "Block of Iron",
+    "diamond_block": "Block of Diamond",
+    "clay_ball": "Clay",
+    "brick": "Brick",
+    "ladder": "Ladder",
+    "glass_pane": "Glass Pane",
+    "iron_bars": "Iron Bars",
+    "stone_slab": "Stone Slab",
+    "sandstone_slab": "Sandstone Slab",
+    "oak_slab": "Wooden Slab",
+    "cobblestone_slab": "Cobblestone Slab",
+    "brick_slab": "Brick Slab",
+    "stone_brick_slab": "Stone Brick Slab",
+    "paper": "Paper",
+    "book": "Book",
 }
 
 # Порядок в палитре творческого режима. Первые девять лежат в хотбаре нового мира.
@@ -134,6 +171,23 @@ FLAT_ITEMS = {
     "diamond": "diamond.png",
     # У факела нет отдельной картинки предмета: в руке и в инвентаре текстура блока.
     "torch": "../block/torch.png",
+    "glowstone_dust": "glowstone_dust.png",
+    "gold_nugget": "gold_nugget.png",
+    "gunpowder": "gunpowder.png",
+    "ghast_tear": "ghast_tear.png",
+    "blaze_rod": "blaze_rod.png",
+    # Нарост в инвентаре своей картинкой, а не кустом.
+    "nether_wart": "nether_wart.png",
+    # Тростник в руке и в инвентаре картинкой предмета, а не стеблем.
+    "sugar_cane": "sugar_cane.png",
+    "paper": "paper.png",
+    "book": "book.png",
+    "clay_ball": "clay_ball.png",
+    "brick": "brick.png",
+    # Лестница, панель и прутья в руке и в инвентаре плоские, картинкой блока.
+    "ladder": "../block/ladder.png",
+    "glass_pane": "../block/glass.png",
+    "iron_bars": "../block/iron_bars.png",
 }
 
 # Еда: сколько единиц здоровья возвращает (2 единицы = 1 сердечко). Как в ранних
@@ -233,6 +287,20 @@ DROPS = {
     "coal_ore": "coal",
     "fire": None,
     "diamond_ore": "diamond",
+    "nether_portal": None,
+    "glowstone": "glowstone_dust",
+    "nether_wart_stage0": "nether_wart",
+    "nether_wart_stage1": "nether_wart",
+    "bookshelf": "book",
+    # Глина рассыпается на комки, двойная плита на две плиты.
+    "clay": "clay_ball",
+    **{double: slab for double, slab in shapes.DOUBLE_SLABS.items()},
+}
+
+# Сколько штук выпадает, если больше одной: (от, до). Нарост считает plants.
+DROP_COUNTS = {
+    "glowstone": (2, 4), "bookshelf": (3, 3), "clay": (4, 4),
+    **{double: (2, 2) for double in shapes.DOUBLE_SLABS},
 }
 
 INVENTORY_SIZE = 36
@@ -248,7 +316,10 @@ def is_known_item(item):
 
 
 def is_placeable(item):
-    return item in BLOCKS or is_door(item) or item in TORCHES or item in BEDS or plants.is_plant(item)
+    return (
+        item in BLOCKS or is_door(item) or item in TORCHES or item in BEDS or plants.is_plant(item)
+        or shapes.is_shaped(item)
+    )
 
 
 def max_uses(item):
@@ -294,6 +365,16 @@ def drop_for(block_type):
         return "flint"
 
     return DROPS.get(block_type, block_type)
+
+
+def drop_count(block_type):
+    if block_type in plants.WARTS:
+        return plants.wart_harvest(block_type)
+
+    if block_type in DROP_COUNTS:
+        return random.randint(*DROP_COUNTS[block_type])
+
+    return 1
 
 
 def bonus_drops(block_type):

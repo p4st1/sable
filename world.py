@@ -59,6 +59,10 @@ class World:
         self.water_updates = set()
         self.lava_updates = set()
 
+        # Клетки, где песок или гравий мог потерять опору, и падающие блоки (falling.py).
+        self.fall_updates = set()
+        self.falling = []
+
         # Бесконечный мир подгружает чанки сам (streaming.ChunkLoader). Тогда блок
         # в незагруженный чанк не ставится: иначе пустой чанк заменил бы настоящий.
         self.infinite = False
@@ -78,6 +82,10 @@ class World:
 
         self.water_updates = {
             cell for cell in self.water_updates
+            if (cell[0] // Chunk.SIZE, cell[2] // Chunk.SIZE) != key
+        }
+        self.fall_updates = {
+            cell for cell in self.fall_updates
             if (cell[0] // Chunk.SIZE, cell[2] // Chunk.SIZE) != key
         }
         self.lava_updates = {
@@ -110,6 +118,10 @@ class World:
         for dx, dy, dz in ((0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
             self.water_updates.add((x + dx, y + dy, z + dz))
             self.lava_updates.add((x + dx, y + dy, z + dz))
+
+        # Сама клетка (могли поставить песок) и клетка над ней (ось Y вниз).
+        self.fall_updates.add((x, y, z))
+        self.fall_updates.add((x, y - 1, z))
 
     def add_chunk(self, chunk):
         self.chunks[(chunk.chunk_x, chunk.chunk_z)] = chunk
@@ -242,6 +254,10 @@ class World:
         """Целый куб луч задевает всегда, а у створки двери проверяем саму коробку."""
         if block.is_liquid:
             return sources and block.state.is_source
+
+        # Сквозь портал луч проходит: его не сломать, и за ним видно блоки.
+        if block.type == "nether_portal":
+            return False
 
         if block.is_cube:
             return True

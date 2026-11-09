@@ -46,13 +46,14 @@ def move_axis(world, position, axis, delta, box=player_box):
 
     first_axis, second_axis = (other for other in range(3) if other != axis)
 
-    first_cells = range(math.floor(low[first_axis]), math.ceil(high[first_axis]))
-    second_cells = range(math.floor(low[second_axis]), math.ceil(high[second_axis]))
+    # Забор выше своей клетки на полблока: по высоте смотрим и на клетку под телом.
+    first_cells = range(math.floor(low[first_axis]), math.ceil(high[first_axis]) + (first_axis == 1))
+    second_cells = range(math.floor(low[second_axis]), math.ceil(high[second_axis]) + (second_axis == 1))
 
     # Клетка, в которой сейчас край коробки, тоже нужна: в ней может стоять створка.
     if delta > 0:
         edge = high[axis]
-        layers = range(math.floor(edge), math.floor(edge + delta + GAP) + 1)
+        layers = range(math.floor(edge), math.floor(edge + delta + GAP) + 1 + (axis == 1))
     else:
         edge = low[axis]
         layers = range(math.floor(edge), math.floor(edge + delta - GAP) - 1, -1)
@@ -74,23 +75,23 @@ def move_axis(world, position, axis, delta, box=player_box):
                 if block is None or not block.is_solid:
                     continue
 
-                box_low, box_high = block.box()
-                box_low = [cell[index] + box_low[index] for index in range(3)]
-                box_high = [cell[index] + box_high[index] for index in range(3)]
+                for box_low, box_high in block.boxes(world, tuple(cell)):
+                    box_low = [cell[index] + box_low[index] for index in range(3)]
+                    box_high = [cell[index] + box_high[index] for index in range(3)]
 
-                overlaps = all(
-                    box_low[other] < high[other] and box_high[other] > low[other]
-                    for other in (first_axis, second_axis)
-                )
+                    overlaps = all(
+                        box_low[other] < high[other] and box_high[other] > low[other]
+                        for other in (first_axis, second_axis)
+                    )
 
-                if not overlaps:
-                    continue
+                    if not overlaps:
+                        continue
 
-                if delta > 0 and box_low[axis] >= edge - EPSILON:
-                    allowed = min(allowed, box_low[axis] - GAP - edge)
+                    if delta > 0 and box_low[axis] >= edge - EPSILON:
+                        allowed = min(allowed, box_low[axis] - GAP - edge)
 
-                elif delta < 0 and box_high[axis] <= edge + EPSILON:
-                    allowed = max(allowed, box_high[axis] + GAP - edge)
+                    elif delta < 0 and box_high[axis] <= edge + EPSILON:
+                        allowed = max(allowed, box_high[axis] + GAP - edge)
 
     return position[axis] + allowed
 
@@ -112,21 +113,21 @@ SUPPORT_DEPTH = 0.6
 def box_touches_blocks(world, low, high):
     """Задевает ли коробка от low до high коробку хоть одного блока."""
     for x in range(math.floor(low[0]), math.ceil(high[0])):
-        for y in range(math.floor(low[1]), math.ceil(high[1])):
+        for y in range(math.floor(low[1]), math.ceil(high[1]) + 1):
             for z in range(math.floor(low[2]), math.ceil(high[2])):
                 block = world.get_block(x, y, z)
 
                 if block is None or not block.is_solid:
                     continue
 
-                box_low, box_high = block.box()
                 cell = (x, y, z)
 
-                if all(
-                    cell[axis] + box_low[axis] < high[axis] and cell[axis] + box_high[axis] > low[axis]
-                    for axis in range(3)
-                ):
-                    return True
+                for box_low, box_high in block.boxes(world, cell):
+                    if all(
+                        cell[axis] + box_low[axis] < high[axis] and cell[axis] + box_high[axis] > low[axis]
+                        for axis in range(3)
+                    ):
+                        return True
 
     return False
 

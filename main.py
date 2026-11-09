@@ -26,7 +26,7 @@ from mining import BREAK_COOLDOWN, HIT_INTERVAL, HIT_VOLUME, Mining, break_time,
 from containers import Furnace, containers_from_json, containers_to_json, make_container
 import armor
 from figure import PlayerFigure, skin_for
-from items import BUCKETS, FOODS, TOOLS, PlayerInventory, Stack, armor_from_json, bonus_drops, drop_for, insert, is_placeable, max_uses, slots_from_json, slots_to_json
+from items import BUCKETS, FOODS, TOOLS, PlayerInventory, Stack, armor_from_json, bonus_drops, drop_count, drop_for, insert, is_placeable, max_uses, slots_from_json, slots_to_json
 from screens import ChestScreen, CraftingScreen, CreativeScreen, FurnaceScreen, InventoryScreen
 from hand import Hand
 from collision import FEET, GAP, box_touches_block, box_touches_blocks
@@ -36,13 +36,23 @@ from door import facing_side, is_door
 from player import HURT_TIME, MAX_AIR, MAX_HEALTH, Player
 from settings import Settings
 from sound import Music, Sounds
+import sound as sound_module
 from worlds import WORLDS, parse_arguments
 from multiplayer import HOST_ID, ClientSession, ConnectError, HostSession, clean_name, load_player_data, vector, world_time
 
 import storage
 import streaming
 import water
+import nether
+import portal as portal_module
+import explosion
+import fireball as fireball_module
+from nether import NETHER, OVERWORLD, NetherGenerator
 from terrain import TerrainGenerator, random_seed
+import zlib
+import shapes
+import falling as falling_module
+import structures
 
 import math
 import numpy as np
@@ -86,6 +96,35 @@ BLINK_MS = 100
 
 # Сколько при входе на сервер ждать изменённых чанков под ногами.
 TERRAIN_WAIT = 5.0
+
+# Портал: столько секунд постоять в нём, чтобы перенестись (в творческом быстрее),
+# и как сильно фиолетовая пелена закрывает экран в конце.
+PORTAL_TIME = 4.0
+CREATIVE_PORTAL_TIME = 0.5
+PORTAL_OVERLAY_ALPHA = 200
+PORTAL_FRAME_RATE = 16
+PORTAL_VOLUME = 0.5
+# Гул портала: раз в столько секунд, если портал ближе стольких блоков.
+PORTAL_AMBIENT_INTERVAL = (4.0, 9.0)
+PORTAL_AMBIENT_RADIUS = 6
+# Листва без бревна ближе стольких шагов опадает через столько секунд.
+LEAF_REACH = 4
+LEAF_DECAY_TIME = (2.0, 25.0)
+LOGS = {"oak_log", "birch_log", "spruce_log"}
+LEAVES = {"oak_leaves", "birch_leaves", "spruce_leaves"}
+# Трава: растёт на землю при свете не ниже GRASS_LIGHT от травы со светом GRASS_SOURCE_LIGHT,
+# в среднем за столько секунд; под непрозрачным блоком становится землёй.
+GRASS_LIGHT = 4
+GRASS_SOURCE_LIGHT = 9
+GRASS_SPREAD_TIME = 90.0
+GRASS_DIE_TIME = 20.0
+
+# Гаста и взрыв слышно на столько блоков.
+GHAST_HEARING = 64
+EXPLOSION_HEARING = 48
+# Кровать в аду взрывается, как в оригинале.
+BED_EXPLOSION_POWER = 5.0
+EXPLOSION_VOLUME = 1.0
 
 # Громкость звуков относительно полной.
 STEP_VOLUME = 0.25
@@ -227,6 +266,15 @@ class Game(Engine):
         self.seed = None
         self.title_center = (0, -16, 0)
 
+        # Измерение, где сейчас игрок, сырое состояние другого измерения из world.json
+        # (оно записывается обратно как есть) и порталы обоих измерений.
+        self.dimension = OVERWORLD
+        self.other_state = {}
+        self.portals = portal_module.Portals()
+        self.fireball_model = fireball_module.FireballModel(self.engine)
+        self.falling_models = falling_module.FallingModels(self.engine)
+        self.portal_frames = None
+
         self.f3_open = False
         self.gui_hidden = False
 
@@ -237,6 +285,9 @@ class Game(Engine):
         # перестраиваются понемногу в следующих кадрах.
         self.stale_chunks = set()
         chunk_module.smooth_lighting = self.settings.smooth_lighting
+
+        # Углы коробки для /structure save: {"pos1": клетка, "pos2": клетка}.
+        self.structure_corners = {}
 
         # Сетевая игра: multiplayer.HostSession у хозяина, ClientSession у гостя, иначе None.
         self.net = None
@@ -292,6 +343,17 @@ class Game(Engine):
 
     def create_world(self, position, rotation):
         self.world = World()
+        # Огненные шары гастов и ифритов. В сохранение не попадают.
+        self.world.fireballs = []
+        self.dimension = OVERWORLD
+        # Освещение верхнего мира; ад включает своё в start_terrain.
+        chunk_module.set_lighting()
+        # Сколько стоим в портале и не только что ли из него вышли (пока не выйдем, не переносит).
+        self.portal_time = 0.0
+        self.portal_cooldown = False
+        self.portal_sound_timer = random.uniform(*PORTAL_AMBIENT_INTERVAL)
+        # Листва без брёвен рядом опадает: клетка -> через сколько секунд.
+        self.decaying = {}
         self.hostile_timer = 0.0
         # Огонь: где горит и когда у каждого следующий тик.
         self.fire = FireSystem(self.world)
@@ -322,11 +384,17 @@ class Game(Engine):
 
         self.player = Player(self.world, self.camera, self.settings)
 
-    def start_terrain(self, seed, folder):
-        """Бесконечный мир: генератор с сидом и загрузчик чанков вокруг игрока."""
+    def start_terrain(self, seed, folder, dimension=OVERWORLD):
+        """Бесконечный мир: генератор с сидом и загрузчик чанков вокруг игрока.
+
+        В аду свой генератор и своя папка чанков (DIM-1), а сид тот же, что у мира.
+        """
         self.seed = seed
-        self.terrain = TerrainGenerator(seed)
-        self.loader = streaming.ChunkLoader(self.world, self.terrain, folder, self.build_chunk, self.unbuild_chunk)
+        self.dimension = dimension
+        in_nether = dimension == NETHER
+        self.terrain = NetherGenerator(seed) if in_nether else TerrainGenerator(seed)
+        chunk_module.set_lighting(nether.AMBIENT, night=False) if in_nether else chunk_module.set_lighting()
+        self.loader = streaming.ChunkLoader(self.world, self.terrain, nether.chunk_folder(folder, dimension), self.build_chunk, self.unbuild_chunk)
         self.loader.on_generate = self.populate_chunk
 
     def show_loading(self, text):
@@ -369,10 +437,13 @@ class Game(Engine):
 
         return True
 
-    def enter_world(self, folder, generator, name=None, new_world=False, game_mode="creative", seed=None):
+    def enter_world(self, folder, generator, name=None, new_world=False, game_mode="creative", seed=None, dimension=None, arrival=None, position=None):
         """Открывает мир из saves/<folder>. Новый мир строится генератором из WORLDS.
 
         game_mode и seed нужны только новому миру: у сохранённого они в world.json.
+        dimension: в каком измерении оказаться (по умолчанию где игрок был при выходе).
+        arrival: точка, куда привёл портал (там ищется или строится портал),
+        position: точное место появления (возрождение в верхнем мире).
         """
         test_world = WORLDS.get(generator)
         load = storage.has_save(folder) and not new_world
@@ -380,9 +451,16 @@ class Game(Engine):
         if test_world is None and not load:
             raise ValueError(f"неизвестный тип мира '{generator}'")
 
-        infinite = test_world is not None and test_world.infinite
+        if dimension is None:
+            dimension = storage.saved_dimension(folder) if load else OVERWORLD
 
-        if infinite:
+        in_nether = dimension == NETHER
+        # Ад всегда бесконечный, даже у тестовых миров.
+        infinite = in_nether or (test_world is not None and test_world.infinite)
+
+        if arrival is not None:
+            self.show_loading("Entering the Nether" if in_nether else "Leaving the Nether")
+        elif infinite:
             self.show_loading("Loading world..." if load else "Generating world...")
 
         if test_world is None:
@@ -390,17 +468,25 @@ class Game(Engine):
         else:
             self.create_world(test_world.position, test_world.rotation)
 
+        self.dimension = dimension
+
         if not load:
             # В папке могут остаться чанки прошлой версии мира (после --new или Re-Create).
             storage.clear_chunks(folder)
+            storage.clear_chunks(nether.chunk_folder(folder, NETHER))
             self.saved_players = {}
+            self.other_state = {}
+            self.portals = portal_module.Portals()
 
         if load:
             meta = storage.load_world(self.world, self.player, folder, load_chunks=not infinite)
+            state = nether.state_of(meta, dimension)
+            self.other_state = nether.state_of(meta, NETHER if dimension == OVERWORLD else OVERWORLD)
+            self.portals = portal_module.Portals(meta.get("portals"))
 
             # Животные до первых чанков: иначе в уже заселённых чанках появились бы снова.
-            self.world.mobs = mobs.mobs_from_json(meta.get("mobs"))
-            self.world.spawned_chunks = mobs.spawned_from_json(meta.get("spawned_chunks"))
+            self.world.mobs = mobs.mobs_from_json(state["mobs"])
+            self.world.spawned_chunks = mobs.spawned_from_json(state["spawned_chunks"])
 
             rules = meta.get("game_rules")
             self.keep_inventory = isinstance(rules, dict) and rules.get("keepInventory") is True
@@ -416,18 +502,30 @@ class Game(Engine):
             if infinite:
                 saved_seed = meta.get("seed")
 
+                # У тестовых площадок сида нет, а аду он нужен: берём его из имени папки.
+                if type(saved_seed) is not int and in_nether:
+                    saved_seed = zlib.crc32(folder.encode("utf-8"))
+
                 if type(saved_seed) is not int:
                     raise SystemExit(f"В сохранении {storage.world_folder(folder)} нет сида мира")
 
-                self.start_terrain(saved_seed, folder)
+                self.start_terrain(saved_seed, folder, dimension)
+
+            if arrival is not None:
+                self.camera.position = self.arrive(arrival)
+                self.portal_cooldown = True
+            elif position is not None:
+                self.camera.position = position
+
+            if infinite:
                 self.loader.ensure(self.camera.position[0], self.camera.position[2])
 
             self.game_mode = storage.game_mode_of(meta)
 
             health = meta.get("health")
             self.player.health = health if type(health) is int and 1 <= health <= MAX_HEALTH else MAX_HEALTH
-            self.world.containers = containers_from_json(meta.get("containers"))
-            self.world.items = items_from_json(meta.get("items"))
+            self.world.containers = containers_from_json(state["containers"])
+            self.world.items = items_from_json(state["items"])
 
             players = meta.get("players")
             self.saved_players = players if isinstance(players, dict) else {}
@@ -570,11 +668,322 @@ class Game(Engine):
         if self.net is not None and self.net.is_host:
             self.net.send_rules()
 
+    # Измерения и порталы.
+
+    def change_dimension(self, target, arrival=None, position=None):
+        """Переход в другое измерение: мир сохраняется и открывается заново в нём.
+
+        arrival: точка, куда ведёт портал, position: точное место (возрождение).
+        Чат, огонь на игроке и выбранный слот переходят вместе с ним.
+        """
+        messages = list(self.chat.messages)
+        fire_time = self.player.fire_time
+        self.save_world()
+        self.enter_world(self.world_folder, self.world_generator, self.world_name, dimension=target, arrival=arrival, position=position)
+        self.chat.messages.extend(messages)
+        self.player.fire_time = fire_time
+        # Сразу записываем, в каком мы теперь измерении: иначе после сбоя игрок оказался бы не там.
+        self.save_world()
+
+    def travel(self):
+        """Игрок достоял в портале: переносимся на другую сторону."""
+        if self.net is not None:
+            self.chat.add("The Nether is not available in LAN games yet", GRAY)
+            self.portal_cooldown = True
+            return
+
+        if self.world_folder is None:
+            return
+
+        target = NETHER if self.dimension == OVERWORLD else OVERWORLD
+        point = nether.to_dimension(self.camera.position, self.dimension, target)
+        self.mining.stop()
+        self.change_dimension(target, arrival=point)
+        self.sounds.play("block.portal.travel", PORTAL_VOLUME)
+
+    def arrive(self, point):
+        """Где появиться, придя порталом в точку point этого измерения.
+
+        Ближайший записанный портал рядом, иначе новый: на подходящем месте
+        поблизости или на обсидиановой площадке прямо в точке, как в оригинале.
+        """
+        x, y, z = (math.floor(value) for value in point)
+
+        # Тестовая площадка конечна: портал строим в её пределах.
+        if self.loader is None and self.world.chunks:
+            keys = list(self.world.chunks)
+            low_x = min(key[0] for key in keys) * Chunk.SIZE + 3
+            high_x = (max(key[0] for key in keys) + 1) * Chunk.SIZE - 4
+            low_z = min(key[1] for key in keys) * Chunk.SIZE + 3
+            high_z = (max(key[1] for key in keys) + 1) * Chunk.SIZE - 4
+            x = min(max(x, low_x), high_x)
+            z = min(max(z, low_z), high_z)
+
+        for cell, axis in self.portals.nearest(self.dimension, x, y, z):
+            if self.loader is not None:
+                self.loader.ensure(cell[0], cell[2], 1)
+
+            if portal_module.is_portal(self.world.get_block(*cell)):
+                return portal_module.arrival_point(cell, axis, FEET)
+
+            # Портал разрушили, пока нас не было рядом.
+            self.portals.remove(self.dimension, cell)
+
+        radius = portal_module.BUILD_RADIUS
+
+        if self.loader is not None:
+            self.loader.ensure(x, z, radius // Chunk.SIZE + 2)
+
+        if self.dimension == NETHER:
+            floor_range = (nether.CEILING_Y + 8, nether.LAVA_SEA_Y - 2)
+            fallback_y = min(max(y, nether.CEILING_Y + 12), nether.LAVA_SEA_Y - 8)
+        else:
+            floor_range = (Y_MIN + 10, Y_MAX - 70)
+            fallback_y = min(max(y, Y_MIN + 10), Y_MAX - 70)
+
+        site = portal_module.find_site(self.world, x, y, z, floor_range, radius)
+
+        if site is not None:
+            left, axis = site
+            portal_module.build(self.world, left, axis)
+        else:
+            left, axis = (x, fallback_y, z), "x"
+            portal_module.build(self.world, left, axis, platform=True)
+
+        self.portals.add(self.dimension, left, axis)
+
+        return portal_module.arrival_point(left, axis, FEET)
+
+    def touching_portal(self):
+        low, high = player_box(self.camera.position)
+
+        for x in range(math.floor(low[0]), math.floor(high[0]) + 1):
+            for y in range(math.floor(low[1]), math.floor(high[1]) + 1):
+                for z in range(math.floor(low[2]), math.floor(high[2]) + 1):
+                    if portal_module.is_portal(self.world.get_block(x, y, z)):
+                        return True
+
+        return False
+
+    def update_portal(self, dt):
+        """Стоим в портале: пелена густеет, и через несколько секунд переносит."""
+        if self.player.dead or not self.touching_portal():
+            self.portal_time = max(0.0, self.portal_time - dt * 2)
+            self.portal_cooldown = False
+            return
+
+        if self.portal_cooldown:
+            return
+
+        if self.portal_time == 0:
+            self.sounds.play("block.portal.trigger", PORTAL_VOLUME)
+
+        self.portal_time += dt
+
+        if self.portal_time >= (PORTAL_TIME if self.survival else CREATIVE_PORTAL_TIME):
+            self.portal_time = 0.0
+            self.travel()
+
+    def collapse_portals(self, cell):
+        """После правки в клетке гаснут порталы, у которых больше нет целой рамки."""
+        removed = portal_module.collapse_around(self.world, cell)
+
+        for portal_cell in removed:
+            self.world.notify(*portal_cell)
+            self.portals.remove(self.dimension, portal_cell)
+
+        for x, z in {(portal_cell[0], portal_cell[2]) for portal_cell in removed}:
+            self.rebuild_around(x, z)
+
+    # Взрывы и огненные шары.
+
+    def explode(self, center, power, fire=False, source=None):
+        """Взрыв: рушит блоки, бьёт и отбрасывает всех рядом, может поджечь."""
+        self.sounds.play_at("entity.generic.explode", center, self.camera, EXPLOSION_VOLUME, EXPLOSION_HEARING)
+
+        if self.is_client:
+            return
+
+        cells = explosion.affected_cells(self.world, center, power, random)
+        changed = []
+
+        for cell in sorted(cells):
+            block = self.world.get_block(*cell)
+
+            if block is None or block.is_liquid or block.type in ("bedrock",):
+                continue
+
+            if is_door(block.type):
+                self.world.remove_door(*cell)
+            elif is_bed(block.type):
+                self.world.remove_bed(*cell)
+            else:
+                self.world.remove_block(*cell)
+
+            container = self.world.containers.pop(cell, None)
+
+            if container is not None:
+                for stack in container.slots:
+                    if stack is not None:
+                        self.drop(stack.copy(), cell)
+
+            dropped = drop_for(block.type)
+
+            if dropped is not None and random.random() < explosion.DROP_CHANCE:
+                self.drop(Stack(dropped), cell)
+
+            if block.type in LOGS:
+                self.check_leaves_around(cell)
+
+            changed.append(cell)
+
+        for cell in changed:
+            self.world.notify(*cell)
+            self.collapse_portals(cell)
+            self.drop_unsupported(cell)
+
+        if fire:
+            for cell in cells:
+                below = self.world.get_block(cell[0], cell[1] + 1, cell[2])
+
+                if self.world.get_block(*cell) is None and below is not None and below.is_opaque and random.random() < explosion.FIRE_CHANCE:
+                    if self.fire.ignite(cell):
+                        changed.append(cell)
+
+        for x, z in {(cell[0], cell[2]) for cell in changed}:
+            self.rebuild_around(x, z)
+
+        # Тела вокруг.
+        if self.survival and not self.player.dead:
+            low, high = player_box(self.camera.position)
+            hit = explosion.impact(self.world, center, power, low, high)
+
+            if hit is not None:
+                strength, (dx, _, dz) = hit
+                flat = math.hypot(dx, dz) or 1.0
+                self.player.hurt_time = 0.0
+                self.hurt_by_mob(explosion.damage_for(strength, power), dx / flat * strength * 2, dz / flat * strength * 2)
+
+        # Свинозомби злится, только если взрыв устроил игрок (отбитый шар, кровать).
+        by_player = source is None or getattr(source, "shooter", None) is self.player
+
+        for mob in self.world.mobs:
+            if mob.dead:
+                continue
+
+            hit = explosion.impact(self.world, center, power, *mob.box(mob.position))
+
+            if hit is not None:
+                strength, _ = hit
+                anger = mob.anger
+                mob.hurt_time = 0.0
+                mob.hurt(explosion.damage_for(strength, power), center)
+
+                if not by_player:
+                    mob.anger, mob.alerted = anger, False
+
+    def shoot_fireball(self, mob, origin, aim_at):
+        small = mob.kind.fireballs == "small"
+        direction = [aim_at[axis] - origin[axis] for axis in range(3)]
+
+        if small:
+            length = math.sqrt(sum(value * value for value in direction)) or 1.0
+            direction = [value / length + random.gauss(0, fireball_module.SMALL_SPREAD) for value in direction]
+
+        # Шар вылетает с края тела стрелявшего, а не из его середины.
+        unit = fireball_module.Fireball.unit(direction)
+        start = tuple(origin[axis] + unit[axis] * (mob.kind.half_width + 0.6) for axis in range(3))
+
+        self.world.fireballs.append(fireball_module.Fireball(start, unit, mob, small))
+
+    def update_fireballs(self, dt):
+        """Шары летят, взрываются и поджигают."""
+        targets = [(mob, *mob.box(mob.position)) for mob in self.world.mobs if not mob.dead]
+
+        if self.survival and not self.player.dead:
+            targets.append((self.player, *player_box(self.camera.position)))
+
+        for ball in list(self.world.fireballs):
+            if not self.mob_loaded(ball.position[0], ball.position[2]):
+                self.world.fireballs.remove(ball)
+                continue
+
+            result = ball.update(self.world, dt, targets)
+
+            if result is not None:
+                kind, what = result
+
+                if kind == "hit" and what is self.player:
+                    dx, _, dz = ball.direction
+                    flat = math.hypot(dx, dz) or 1.0
+                    self.hurt_by_mob(ball.damage, dx / flat, dz / flat)
+                    self.player.fire_time = max(self.player.fire_time, fire_module.BURN_TIME / 2)
+
+                elif kind == "hit":
+                    anger = what.anger
+                    what.hurt(ball.damage, (ball.position[0] - ball.direction[0], ball.position[1], ball.position[2] - ball.direction[2]))
+
+                    if ball.shooter is not self.player:
+                        what.anger, what.alerted = anger, False
+
+                    if not what.kind.fireproof:
+                        what.fire_time = fire_module.BURN_TIME / 2
+
+                if ball.small:
+                    # Малый шар поджигает клетку, куда прилетел.
+                    cell = tuple(math.floor(value) for value in ball.position)
+
+                    if self.fire.ignite(cell):
+                        self.world.notify(*cell)
+                        self.rebuild_around(cell[0], cell[2])
+                else:
+                    self.explode(ball.position, fireball_module.LARGE_POWER, fire=True, source=ball)
+
+            if ball.removed and ball in self.world.fireballs:
+                self.world.fireballs.remove(ball)
+
+    def deflect_fireball(self):
+        """Удар по летящему шару отбивает его туда, куда смотрим. True, если попали."""
+        eye = self.camera.position
+        forward = self.camera.forward()
+        reach = MOB_REACH if self.survival else CREATIVE_MOB_REACH
+
+        for ball in self.world.fireballs:
+            distance = ray_box_distance(eye, forward, *ball.box())
+
+            if distance is not None and distance <= reach:
+                ball.deflect(forward, self.player)
+                self.hand.swing()
+                return True
+
+        return False
+
+    def fireball_objects(self):
+        if not self.in_world:
+            return []
+
+        objects = []
+
+        for ball in self.world.fireballs:
+            # Вершины первыми: модель строится при первом шаре.
+            points = self.fireball_model.world_points(ball, self.camera)
+            objects.append(DrawObject(self.fireball_model.mesh, points, 1.0))
+
+        return objects
+
     def respawn(self):
         position = self.spawn_point
 
+        # Из ада возрождаются наверху: сначала переносимся туда.
+        if self.dimension == NETHER:
+            self.player.respawn(position)
+            self.change_dimension(OVERWORLD, position=position)
+
         # Возрождение у кровати, если она ещё стоит.
         if self.bed is not None:
+            if self.loader is not None:
+                self.loader.ensure(self.bed[0], self.bed[2], 0)
+
             block = self.world.get_block(*self.bed)
 
             if block is not None and is_bed(block.type):
@@ -621,6 +1030,11 @@ class Game(Engine):
     def open_to_lan(self):
         """Кнопка Open to LAN: свой мир становится сервером для игроков в локальной сети."""
         if self.net is not None or self.world_folder is None:
+            return
+
+        if self.dimension != OVERWORLD:
+            self.chat.add("Return to the Overworld to open the game to LAN", GRAY)
+            self.set_menu(False)
             return
 
         try:
@@ -813,7 +1227,15 @@ class Game(Engine):
         # Спящий встаёт с кровати, иначе загрузился бы внутри неё.
         self.wake_up()
 
-        # Погибший игрок выходит из мира уже возрождённым.
+        # Летящий песок ложится сразу туда, куда бы упал.
+        if not self.is_client:
+            self.land_falling()
+
+        # Погибший игрок выходит из мира уже возрождённым. Погибший в аду
+        # возрождается наверху: туда и переносимся (это само сохранит мир).
+        if self.player.dead and self.dimension == NETHER and not self.is_client:
+            self.respawn()
+
         if self.player.dead:
             self.player.respawn(self.spawn_point)
 
@@ -835,15 +1257,19 @@ class Game(Engine):
                 "spawn": list(self.spawn_point),
                 "inventory": slots_to_json(self.inventory.slots),
                 "armor": slots_to_json(self.inventory.armor),
-                "containers": containers_to_json(self.world.containers),
-                "items": items_to_json(self.world.items),
-                "mobs": mobs.mobs_to_json(self.world.mobs),
                 "time": round(self.world.time, 2),
                 "bed": list(self.bed) if self.bed is not None else None,
                 "game_rules": {"keepInventory": self.keep_inventory},
-                "spawned_chunks": mobs.spawned_to_json(self.world.spawned_chunks),
                 "players": self.saved_players,
-            }
+                "portals": self.portals.to_json(),
+                **nether.write_states({}, self.dimension, {
+                    "containers": containers_to_json(self.world.containers),
+                    "items": items_to_json(self.world.items),
+                    "mobs": mobs.mobs_to_json(self.world.mobs),
+                    "spawned_chunks": mobs.spawned_to_json(self.world.spawned_chunks),
+                }, self.other_state),
+            },
+            chunks_name=nether.chunk_folder(self.world_folder, self.dimension),
         )
 
         print(f"Мир сохранён в {storage.world_folder(self.world_folder)}, записано чанков: {written}")
@@ -868,8 +1294,21 @@ class Game(Engine):
     def build_chunk(self, chunk):
         chunk.meshed = True
         objects = []
+        meshes = chunk.build_mesh(self.world)
 
-        for texture_name, data in chunk.build_mesh(self.world).items():
+        # Портал рисуется полупрозрачным вместе с водой.
+        portal_data = meshes.pop(portal_module.PORTAL_TEXTURE, None)
+        chunk.portal_objects = []
+
+        if portal_data is not None:
+            portal_object = Object3D(Mesh(portal_data['points'], portal_data['triangles'], portal_data['uvs'], self.engine.load_texture(portal_module.PORTAL_TEXTURE), portal_data['shades'], portal_data['night_shades']))
+            portal_object.position = (chunk.chunk_x * chunk.SIZE, 0, chunk.chunk_z * chunk.SIZE)
+            portal_object.static = True
+            portal_object.opacity = 190
+            portal_object.build_world_points()
+            chunk.portal_objects.append(portal_object)
+
+        for texture_name, data in meshes.items():
             texture = self.engine.load_texture(texture_name)
 
             mesh = Mesh(
@@ -922,7 +1361,7 @@ class Game(Engine):
             water_object.build_world_points()
             objects.append(water_object)
 
-        self.world.set_liquid_objects(chunk, objects)
+        self.world.set_liquid_objects(chunk, objects + getattr(chunk, "portal_objects", []))
 
     def tick_water(self, dt):
         """Вода течёт шагами раз в water.TICK. Перестраиваются только меши воды.
@@ -977,6 +1416,10 @@ class Game(Engine):
         for cell in changed:
             self.world.notify(*cell)
 
+            # Огонь мог сжечь бревно: листве рядом пора проверить опору.
+            if self.world.get_block(*cell) is None:
+                self.check_leaves_around(cell)
+
         for key in {(cell[0] // Chunk.SIZE, cell[2] // Chunk.SIZE) for cell in changed}:
             self.rebuild_around(key[0] * Chunk.SIZE + 8, key[1] * Chunk.SIZE + 8)
 
@@ -985,6 +1428,30 @@ class Game(Engine):
         self.hand.swing()
 
         if target is None or not in_height(target[1]):
+            return
+
+        # Огонь в пустой рамке из обсидиана зажигает портал.
+        frame = portal_module.find_frame(self.world, target)
+
+        if frame is not None:
+            axis, cells = frame
+            portal_module.light(self.world, axis, cells)
+            self.portals.add(self.dimension, cells[0], axis)
+
+            for cell in cells:
+                self.world.notify(*cell)
+
+            self.rebuild_around(target[0], target[2])
+            self.world_sound("item.flintandsteel.use", self.cell_center(target))
+            self.world_sound("block.portal.trigger", self.cell_center(target), PORTAL_VOLUME)
+
+            if self.survival:
+                stack = self.held_stack()
+                stack.damage += 1
+
+                if stack.damage >= max_uses("flint_and_steel"):
+                    self.inventory.slots[self.selected_slot] = None
+
             return
 
         if self.fire.ignite(target):
@@ -1090,7 +1557,17 @@ class Game(Engine):
             return
 
         self.ambient_timer = 0.0
-        lava_cells, fire_cells = self.nearby_cells(("lava",), (FIRE,))
+        lava_cells, fire_cells, portal_cells = self.nearby_cells(("lava",), (FIRE,), (portal_module.PORTAL,))
+
+        # Портал гудит, если стоишь рядом.
+        self.portal_sound_timer -= AMBIENT_TICK
+
+        if portal_cells and self.portal_sound_timer <= 0:
+            self.portal_sound_timer = random.uniform(*PORTAL_AMBIENT_INTERVAL)
+            nearest = min(portal_cells, key=lambda cell: math.dist(cell, eye))
+
+            if math.dist(nearest, eye) < PORTAL_AMBIENT_RADIUS:
+                self.sounds.play_at("block.portal.ambient", self.cell_center(nearest), self.camera, PORTAL_VOLUME)
 
         # Чем больше лавы рядом, тем чаще она булькает. Звучит только открытая сверху.
         lava_cells = [cell for cell in lava_cells if self.world.get_block(cell[0], cell[1] - 1, cell[2]) is None]
@@ -1158,6 +1635,8 @@ class Game(Engine):
             return
 
         sapling_ids = np.array(ids_where(lambda block: block.type in plants.SAPLINGS), dtype=np.uint16)
+        wart_ids = np.array(ids_where(lambda block: block.type in plants.WARTS and plants.next_stage(block.type)), dtype=np.uint16)
+        cane_ids = np.array(ids_where(lambda block: block.type == plants.CANE), dtype=np.uint16)
         lava_ids = np.array(water.water_ids(water.LAVA), dtype=np.uint16)
 
         # За сколько секунд чанки обходятся полностью.
@@ -1171,6 +1650,14 @@ class Game(Engine):
 
             if len(lava_ids):
                 self.lava_ignites(chunk, lava_ids, lap)
+
+            if len(wart_ids):
+                self.grow_warts(chunk, wart_ids, lap)
+
+            if len(cane_ids):
+                self.tick_cane(chunk, cane_ids, lap)
+
+            self.spread_grass(chunk, lap)
 
             if len(sapling_ids) == 0:
                 continue
@@ -1196,6 +1683,290 @@ class Game(Engine):
                     for dx in (-3, 0, 3):
                         for dz in (-3, 0, 3):
                             self.rebuild_around(x + dx, z + dz)
+
+    # Падающие песок и гравий.
+
+    def tick_falling(self, dt):
+        """Песок и гравий без опоры срываются, летящие падают и ложатся. В чужом мире это делает хозяин."""
+        world = self.world
+
+        if self.is_client:
+            world.fall_updates.clear()
+            return
+
+        checks, world.fall_updates = world.fall_updates, set()
+
+        for cell in checks:
+            block = world.get_block(*cell)
+
+            if not falling_module.is_falling_type(block) or not in_height(cell[1] + 1):
+                continue
+
+            if not self.mob_loaded(cell[0], cell[2]) or not falling_module.can_fall_into(world.get_block(cell[0], cell[1] + 1, cell[2])):
+                continue
+
+            world.remove_block(*cell)
+            world.notify(*cell)
+            world.falling.append(falling_module.FallingBlock(block, cell))
+            self.rebuild_around(cell[0], cell[2])
+
+        for falling in list(world.falling):
+            result = falling.update(world, dt)
+
+            if result is not None:
+                self.settle_falling(falling, *result)
+
+            if falling.removed:
+                world.falling.remove(falling)
+
+    def settle_falling(self, falling, outcome, cell):
+        """Упавший блок встаёт на место или, если некуда, рассыпается предметом."""
+        occupant = self.world.get_block(*cell)
+
+        if outcome == "land" and falling_module.can_fall_into(occupant):
+            self.world.set_block(*cell, falling.block)
+            self.world.notify(*cell)
+            self.rebuild_around(cell[0], cell[2])
+            self.block_sound(falling.block.type, "place", cell)
+        else:
+            self.drop(Stack(falling.block.type), cell)
+
+    def land_falling(self):
+        for falling in list(self.world.falling):
+            self.settle_falling(falling, "land", falling.landing_cell(self.world))
+
+        self.world.falling.clear()
+
+    # Листва.
+
+    def check_leaves_around(self, cell):
+        """Бревно пропало: листва в радиусе LEAF_REACH, не связанная с другим бревном, опадёт."""
+        x, y, z = cell
+        reach = LEAF_REACH
+
+        for dx in range(-reach, reach + 1):
+            for dy in range(-reach, reach + 1):
+                for dz in range(-reach, reach + 1):
+                    leaf = (x + dx, y + dy, z + dz)
+                    block = self.world.get_block(*leaf)
+
+                    if block is not None and block.type in LEAVES and leaf not in self.decaying and not self.leaf_supported(leaf):
+                        self.decaying[leaf] = random.uniform(*LEAF_DECAY_TIME)
+
+    def leaf_supported(self, cell):
+        """Есть ли бревно не дальше LEAF_REACH шагов по листве, как в оригинале."""
+        frontier, seen = [cell], {cell}
+
+        for _ in range(LEAF_REACH):
+            next_frontier = []
+
+            for x, y, z in frontier:
+                for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                    neighbour = (x + dx, y + dy, z + dz)
+
+                    if neighbour in seen:
+                        continue
+
+                    seen.add(neighbour)
+                    block = self.world.get_block(*neighbour)
+
+                    if block is None:
+                        continue
+
+                    if block.type in LOGS:
+                        return True
+
+                    if block.type in LEAVES:
+                        next_frontier.append(neighbour)
+
+            frontier = next_frontier
+
+        return False
+
+    def tick_decay(self, dt):
+        if not self.decaying or self.is_client:
+            return
+
+        columns = set()
+
+        for cell, left in list(self.decaying.items()):
+            left -= dt
+
+            if left > 0:
+                self.decaying[cell] = left
+                continue
+
+            del self.decaying[cell]
+            block = self.world.get_block(*cell)
+
+            if block is None or block.type not in LEAVES or self.leaf_supported(cell):
+                continue
+
+            self.world.remove_block(*cell)
+            self.world.notify(*cell)
+
+            # Как при ломании: иногда саженец или яблоко.
+            for item in bonus_drops(block.type):
+                self.drop(Stack(item), cell)
+
+            columns.add((cell[0], cell[2]))
+
+        if columns:
+            self.rebuild_cells(columns)
+
+    # Трава.
+
+    def spread_grass(self, chunk, lap):
+        """Трава расползается на освещённую землю рядом, а под непрозрачным блоком
+        становится землёй, как в оригинале. Смотрим и на край соседних чанков."""
+        if not chunk.meshed or chunk.light is None:
+            return
+
+        size = Chunk.SIZE
+        ids = np.zeros((size + 2, chunk.ids.shape[1], size + 2), dtype=np.uint16)
+
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                neighbour = self.world.get_chunk(chunk.chunk_x + dx, chunk.chunk_z + dz)
+
+                if neighbour is None:
+                    continue
+
+                source_x = slice(size - 1, size) if dx < 0 else slice(0, 1) if dx > 0 else slice(0, size)
+                source_z = slice(size - 1, size) if dz < 0 else slice(0, 1) if dz > 0 else slice(0, size)
+                target_x = slice(0, 1) if dx < 0 else slice(size + 1, size + 2) if dx > 0 else slice(1, size + 1)
+                target_z = slice(0, 1) if dz < 0 else slice(size + 1, size + 2) if dz > 0 else slice(1, size + 1)
+                ids[target_x, :, target_z] = neighbour.ids[source_x, :, source_z]
+
+        opaque_of = np.array([block is not None and block.is_opaque for block in chunk_module.PALETTE], dtype=bool)
+        grass_id, dirt_id = Block("grass"), Block("dirt")
+        grass_number = chunk_module.block_id(grass_id)
+        dirt_number = chunk_module.block_id(dirt_id)
+        opaque = opaque_of[ids]
+        grass = ids == grass_number
+
+        # Свет в клетке над блоком: из света, посчитанного при постройке меша.
+        rows = ids.shape[1]
+        light = np.full((size + 2, rows, size + 2), 15, dtype=np.uint8)
+        packed = chunk.light
+        top = chunk.light_top - Y_MIN
+        levels = np.maximum(packed & 15, packed >> 4)
+        start, end = max(top, 0), min(top + packed.shape[1], rows)
+        light[:, :max(top, 0), :] = 15
+        light[:, start:end, :] = levels[:, start - top:end - top, :]
+        light[:, end:, :] = 0
+
+        above_light = np.zeros_like(light)
+        above_light[:, 1:, :] = light[:, :-1, :]
+        above_opaque = np.zeros_like(opaque)
+        above_opaque[:, 1:, :] = opaque[:, :-1, :]
+
+        # Источник рядом: трава на клетку ниже или до трёх выше земли (ось Y вниз), по бокам на клетку.
+        near = np.zeros_like(grass)
+        source = grass & (above_light >= GRASS_SOURCE_LIGHT)
+
+        for dy in range(-3, 2):
+            shifted = np.zeros_like(source)
+
+            if dy < 0:
+                shifted[:, -dy:, :] = source[:, :dy, :]
+            elif dy > 0:
+                shifted[:, :-dy, :] = source[:, dy:, :]
+            else:
+                shifted = source.copy()
+
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    near[1:-1, :, 1:-1] |= shifted[1 + dx:size + 1 + dx, :, 1 + dz:size + 1 + dz]
+
+        inner = (slice(1, size + 1), slice(None), slice(1, size + 1))
+        spread = (ids == dirt_number) & near & ~above_opaque & (above_light >= GRASS_LIGHT)
+        die = grass & above_opaque
+        roll = np.random.random(ids.shape)
+        spread = spread[inner] & (roll[inner] < lap / GRASS_SPREAD_TIME)
+        die = die[inner] & (roll[inner] < lap / GRASS_DIE_TIME)
+
+        changed = False
+
+        for mask, block in ((spread, grass_id), (die, dirt_id)):
+            for local_x, row, local_z in np.argwhere(mask):
+                x = chunk.chunk_x * size + int(local_x)
+                z = chunk.chunk_z * size + int(local_z)
+                self.world.set_block(x, int(row) + Y_MIN, z, block)
+                changed = True
+
+        if changed:
+            self.rebuild_around(chunk.chunk_x * size + 8, chunk.chunk_z * size + 8)
+
+    def drop_unsupported(self, cell):
+        """Лестницы, прибитые к блоку в cell, падают, если его больше нет."""
+        if self.world.get_block(*cell) is not None and self.world.get_block(*cell).is_opaque:
+            return
+
+        x, y, z = cell
+
+        for side, (dx, dz) in shapes.OFFSETS.items():
+            ladder_cell = (x - dx, y, z - dz)
+            ladder = self.world.get_block(*ladder_cell)
+
+            if ladder is not None and shapes.is_ladder(ladder.type) and ladder.state.facing == side:
+                self.world.remove_block(*ladder_cell)
+                self.world.notify(*ladder_cell)
+                self.drop(Stack(ladder.type), ladder_cell)
+                self.rebuild_around(ladder_cell[0], ladder_cell[2])
+
+    def break_cane_above(self, x, y, z):
+        """Ломает весь тростник над клеткой (x, y, z), каждый блок падает предметом."""
+        above = y - 1
+
+        while (block := self.world.get_block(x, above, z)) is not None and block.type == plants.CANE:
+            self.world.remove_block(x, above, z)
+            self.world.notify(x, above, z)
+            self.drop(Stack(plants.CANE), (x, above, z))
+            above -= 1
+
+        self.rebuild_around(x, z)
+
+    def tick_cane(self, chunk, cane_ids, lap):
+        """Тростник без воды рядом ломается, а верхушка низкого тростника подрастает."""
+        for local_x, row, local_z in np.argwhere(np.isin(chunk.ids, cane_ids)):
+            x = chunk.chunk_x * Chunk.SIZE + int(local_x)
+            z = chunk.chunk_z * Chunk.SIZE + int(local_z)
+            y = int(row) + Y_MIN
+
+            if self.world.get_block(x, y, z) is None:
+                continue
+
+            if not plants.cane_supported(self.world, x, y, z):
+                self.world.remove_block(x, y, z)
+                self.world.notify(x, y, z)
+                self.drop(Stack(plants.CANE), (x, y, z))
+                self.break_cane_above(x, y, z)
+                continue
+
+            # Растёт только верхушка, и не выше CANE_HEIGHT.
+            if self.world.get_block(x, y - 1, z) is not None or random.random() >= lap / plants.CANE_GROW_TIME:
+                continue
+
+            if plants.cane_height(self.world, x, y, z) < plants.CANE_HEIGHT and in_height(y - 1):
+                self.world.set_block(x, y - 1, z, Block(plants.CANE))
+                self.world.notify(x, y - 1, z)
+                self.rebuild_around(x, z)
+
+    def grow_warts(self, chunk, wart_ids, lap):
+        """Адский нарост на песке душ дорастает до следующей стадии, свет не нужен."""
+        for local_x, row, local_z in np.argwhere(np.isin(chunk.ids, wart_ids)):
+            if random.random() >= lap / plants.WART_GROW_TIME:
+                continue
+
+            x = chunk.chunk_x * Chunk.SIZE + int(local_x)
+            z = chunk.chunk_z * Chunk.SIZE + int(local_z)
+            y = int(row) + Y_MIN
+            grown = plants.next_stage(self.world.get_block(x, y, z).type)
+
+            if grown is not None:
+                self.world.set_block(x, y, z, Block(grown))
+                self.rebuild_around(x, z)
 
     def rebuild_around(self, x, z):
         # Блок на границе чанка меняет видимость граней и у соседнего чанка.
@@ -1298,6 +2069,12 @@ class Game(Engine):
             self.chat.add("You can't sleep in a LAN game yet", GRAY)
             return
 
+        # В аду кровать взрывается, как в оригинале.
+        if self.dimension == NETHER:
+            self.remove_bed(*position)
+            self.explode(self.cell_center(position), BED_EXPLOSION_POWER, fire=True)
+            return
+
         if round(self.night_amount() * NIGHT_DARKNESS) < SLEEP_DARKNESS:
             self.chat.add("You can only sleep at night", GRAY)
             return
@@ -1373,7 +2150,10 @@ class Game(Engine):
         return on_bed
 
     def night_amount(self):
-        """Доля ночи сейчас: 0 днём, 1 глубокой ночью."""
+        """Доля ночи сейчас: 0 днём, 1 глубокой ночью. В аду ни дня, ни ночи."""
+        if self.dimension == NETHER:
+            return 0.0
+
         return 1 - daytime.daylight(daytime.celestial_angle(self.world.time))
 
     def brightness_at(self, x, y, z):
@@ -1389,6 +2169,11 @@ class Game(Engine):
         return self.world.light_at(x, y, z)
 
     def update_fog_light(self, dt):
+        # В аду неба нет вовсе, и туман всегда своего тёмно-красного цвета.
+        if self.dimension == NETHER:
+            self.fog_light = 1.0
+            return
+
         x, y, z = (math.floor(value) for value in self.camera.position)
         target = min(1.0, BRIGHTNESS[self.world.sky_light_at(x, y, z)] / BRIGHTNESS[FOG_FULL_LIGHT])
         self.fog_light += (target - self.fog_light) * min(1.0, dt * FOG_LIGHT_SPEED)
@@ -1452,11 +2237,25 @@ class Game(Engine):
                 self.world.remove_block(x, y - 1, z)
                 self.world.notify(x, y - 1, z)
 
+            # Тростник над сломанным падает весь, сколько его ни есть.
+            elif above is not None and above.type == plants.CANE:
+                self.break_cane_above(x, y, z)
+
             # Факел и растения тоже падают, если из-под них выбили блок.
             elif above is not None and (above.type in TORCHES or plants.is_plant(above.type)):
                 self.world.remove_block(x, y - 1, z)
                 self.world.notify(x, y - 1, z)
-                self.drop(Stack(above.type), (x, y - 1, z))
+                dropped = drop_for(above.type)
+
+                if dropped is not None:
+                    self.drop(Stack(dropped, drop_count(above.type)), (x, y - 1, z))
+
+        # Выбитый обсидиан гасит портал, лестницы на выбитой стене падают.
+        self.collapse_portals(target)
+        self.drop_unsupported(target)
+
+        if block.type in LOGS:
+            self.check_leaves_around(target)
 
         held = self.held_type()
 
@@ -1464,7 +2263,7 @@ class Game(Engine):
         dropped = drop_for(block.type)
 
         if dropped is not None and can_harvest(block.type, held):
-            self.drop(Stack(dropped), target)
+            self.drop(Stack(dropped, drop_count(block.type)), target)
 
         for item in bonus_drops(block.type):
             self.drop(Stack(item), target)
@@ -1588,8 +2387,9 @@ class Game(Engine):
         return self.net is None
 
     def populate_chunk(self, chunk):
-        """Новый чанк от генератора: может быть, в нём пасётся стайка."""
-        mobs.populate(self.world, chunk, self.seed or 0)
+        """Новый чанк от генератора: может быть, в нём пасётся стайка. В аду животных нет."""
+        if self.dimension == OVERWORLD:
+            mobs.populate(self.world, chunk, self.seed or 0)
 
     def mob_loaded(self, x, z):
         return self.loader is None or self.loader.is_loaded(x, z)
@@ -1628,8 +2428,10 @@ class Game(Engine):
                 head_x, head_y, head_z = (math.floor(value) for value in mob.center)
                 mob.sunlit = daytime_now and self.world.sky_light_at(head_x, head_y - 1, head_z) >= 15
 
-            # В огне моб получает урон и загорается, в лаве сильнее.
-            if not mob.dead and water.body_in_water(self.world, *mob.box(mob.position), water.LAVA):
+            # В огне моб получает урон и загорается, в лаве сильнее. Жителям ада всё равно.
+            if mob.kind.fireproof:
+                pass
+            elif not mob.dead and water.body_in_water(self.world, *mob.box(mob.position), water.LAVA):
                 mob.fire_time = LAVA_BURN_TIME
                 mob.hurt(LAVA_DAMAGE, None)
 
@@ -1650,6 +2452,19 @@ class Game(Engine):
 
             mob.shots.clear()
 
+            for origin, aim_at in mob.fireballs:
+                self.shoot_fireball(mob, origin, aim_at)
+
+            mob.fireballs.clear()
+
+            # Ударили свинозомби: злятся все вокруг.
+            if mob.alerted:
+                mob.alerted = False
+
+                for other in self.world.mobs:
+                    if other.kind.neutral and not other.dead and math.dist(other.position, mob.position) < mobs.ANGER_RANGE:
+                        other.anger = max(other.anger, mob.anger)
+
             mob.attacks.clear()
 
             if mob.removed:
@@ -1667,6 +2482,7 @@ class Game(Engine):
                 mob.push_apart(other, dt)
 
         self.update_arrows(dt, feet)
+        self.update_fireballs(dt)
 
     def update_arrows(self, dt, feet):
         """Стрелы летят и попадают в игрока (в выживании) или в мобов."""
@@ -1734,7 +2550,11 @@ class Game(Engine):
             self.sounds.play("entity.item.break", TOOL_BREAK_VOLUME)
 
     def target_for(self, mob, target, darkness, dt):
-        """За кем гонится моб. Паук на свету не нападает первым, пока его не ударили."""
+        """За кем гонится моб. Паук на свету не нападает первым, пока его не ударили,
+        а свинозомби только злой."""
+        if target is not None and mob.kind.neutral:
+            return target if mob.anger > 0 else None
+
         if target is None or not mob.kind.daylight_neutral:
             return target
 
@@ -1767,6 +2587,10 @@ class Game(Engine):
         if nearby >= mobs.MAX_HOSTILE:
             return
 
+        if self.dimension == NETHER:
+            self.spawn_nether_mob()
+            return
+
         darkness = round(self.night_amount() * NIGHT_DARKNESS)
 
         for _ in range(mobs.HOSTILE_SPAWN_ATTEMPTS):
@@ -1787,6 +2611,61 @@ class Game(Engine):
             self.world.mobs.append(mobs.Mob(random.choice(mobs.HOSTILE), (x + 0.5, float(y + 1), z + 0.5)))
             return
 
+    def spawn_nether_mob(self):
+        """Ад: свинозомби толпой на камне при любом свете, гаст в большой пещере,
+        а в крепости ифрит."""
+        eye_x, eye_y, eye_z = self.camera.position
+
+        def count(name):
+            return sum(1 for mob in self.world.mobs if mob.kind.name == name and not mob.dead)
+
+        for _ in range(mobs.HOSTILE_SPAWN_ATTEMPTS):
+            angle = random.uniform(0, math.tau)
+            distance = random.uniform(*mobs.HOSTILE_SPAWN_DISTANCE)
+            x = math.floor(eye_x + math.sin(angle) * distance)
+            z = math.floor(eye_z + math.cos(angle) * distance)
+
+            if not self.mob_loaded(x, z):
+                continue
+
+            top = math.floor(eye_y) + random.randint(-mobs.HOSTILE_SPAWN_HEIGHT, mobs.HOSTILE_SPAWN_HEIGHT)
+            y = mobs.spawn_spot(self.world, x, z, top, mobs.HOSTILE_SPAWN_SCAN)
+
+            if y is None:
+                continue
+
+            feet = (x + 0.5, float(y + 1), z + 0.5)
+
+            # В крепости ифриты.
+            if self.terrain.fortresses.fortress_at(x, y, z) is not None and count("blaze") < mobs.MAX_BLAZES:
+                if self.world.get_block(x, y + 1, z).type == "nether_bricks":
+                    self.world.mobs.append(mobs.Mob("blaze", feet))
+                    return
+
+            kind = random.choice(mobs.NETHER_HOSTILE)
+
+            if kind == "ghast":
+                if random.random() > mobs.GHAST_CHANCE or count("ghast") >= mobs.MAX_GHASTS:
+                    continue
+
+                ghast = mobs.Mob("ghast", feet)
+
+                if box_touches_blocks(self.world, *ghast.box(ghast.position)) or water.body_in_water(self.world, *ghast.box(ghast.position), water.LAVA):
+                    continue
+
+                self.world.mobs.append(ghast)
+                return
+
+            for _ in range(random.randint(*mobs.PIGMAN_GROUP)):
+                spot_x = x + random.randint(-2, 2)
+                spot_z = z + random.randint(-2, 2)
+                spot_y = mobs.spawn_spot(self.world, spot_x, spot_z, y - 2, 5)
+
+                if spot_y is not None:
+                    self.world.mobs.append(mobs.Mob("zombie_pigman", (spot_x + 0.5, float(spot_y + 1), spot_z + 0.5)))
+
+            return
+
     def play_mob_sounds(self, mob):
         """Голос, удар, смерть и шаги моба из событий entity.<вид>.* ресурс-пака.
 
@@ -1794,6 +2673,10 @@ class Game(Engine):
         шагов слышен шаг по блоку под ногами, как в оригинале.
         """
         for kind in mob.sounds:
+            # Злой свинозомби не хрюкает, а рычит.
+            if kind == "ambient" and mob.kind.neutral and mob.anger > 0:
+                kind = "angry"
+
             event = f"entity.{mob.kind.name}.{kind}"
 
             if kind == "step":
@@ -1808,7 +2691,8 @@ class Game(Engine):
                     self.sounds.block_sound(ground.type, "step", mob.position, self.camera, MOB_STEP_VOLUME)
 
             elif self.sounds.has(event):
-                self.sounds.play_at(event, mob.center, self.camera, MOB_VOLUME)
+                # Огромного гаста слышно через всю пещеру.
+                self.sounds.play_at(event, mob.center, self.camera, MOB_VOLUME, GHAST_HEARING if mob.kind.scale > 1 else sound_module.HEARING_DISTANCE)
 
             elif kind in ("hurt", "death"):
                 self.sounds.play_at(f"entity.generic.{kind}", mob.center, self.camera, MOB_VOLUME)
@@ -1840,6 +2724,9 @@ class Game(Engine):
         """Удар по животному под прицелом. Возвращает True, если было по кому бить."""
         if not self.mobs_enabled or self.player.dead:
             return False
+
+        if self.deflect_fireball():
+            return True
 
         eye = self.camera.position
         forward = self.camera.forward()
@@ -1959,6 +2846,14 @@ class Game(Engine):
             if math.dist(arrow.position, eye) < limit and (points := self.arrow_model.world_points(arrow)) is not None
         ]
 
+    def falling_objects(self):
+        objects = []
+
+        for block in self.world.falling:
+            objects += self.falling_models.draw_objects(block, self.brightness_at(*block.position))
+
+        return objects
+
     def mob_objects(self):
         if not self.mobs_enabled:
             return []
@@ -2045,6 +2940,26 @@ class Game(Engine):
 
             return
 
+        # Калитка открывается от игрока, как в оригинале.
+        gate = self.world.get_block(*hit)
+
+        if shapes.is_gate(gate.type):
+            state = gate.state
+
+            if not state.open:
+                forward = self.camera.forward()
+                along_x = shapes.gate_along_x(state)
+                facing = ("south" if forward[2] > 0 else "north") if along_x else ("east" if forward[0] > 0 else "west")
+                state = state._replace(facing=facing)
+
+            self.world.set_block(*hit, Block(gate.type, state._replace(open=not state.open)))
+            self.world.notify(*hit)
+            event = "block.fence_gate.close" if state.open else "block.fence_gate.open"
+            self.world_sound(event, self.cell_center(hit))
+            self.rebuild_around(hit[0], hit[2])
+            self.hand.swing()
+            return
+
         # Правый клик по двери открывает или закрывает её, что бы ни было в руке.
         if is_door(self.world.get_block(*hit).type):
             self.world.toggle_door(*hit)
@@ -2083,21 +2998,61 @@ class Game(Engine):
         if held is None or not is_placeable(held) or target is None or not in_height(target[1]):
             return
 
+        # Щелчок по верху плиты: блок встаёт над ней, даже если луч вошёл в её клетку сбоку.
+        hit_block = self.world.get_block(*hit)
+
+        if shapes.is_slab(hit_block.type):
+            low, high = shapes.SLAB_BOX
+            eye, forward = self.camera.position, self.camera.forward()
+            distance = ray_box_distance(eye, forward, [hit[axis] + low[axis] for axis in range(3)], [hit[axis] + high[axis] for axis in range(3)])
+
+            if distance is not None and abs(eye[1] + forward[1] * distance - (hit[1] + low[1])) < 1e-4:
+                target = (hit[0], hit[1] - 1, hit[2])
+
+        # Плита на такую же плиту сверху превращается в двойную, как в 1.0.
+
+        if shapes.is_slab(held) and hit_block.type == held and target == (hit[0], hit[1] - 1, hit[2]):
+            self.world.set_block(*hit, Block(shapes.SLABS[held][2]))
+            self.world.notify(*hit)
+            self.rebuild_around(hit[0], hit[2])
+            self.placed(held, hit)
+            return
+
         occupant = self.world.get_block(*target)
 
         if occupant is not None and not occupant.is_liquid:
+            return
+
+        # Лестницу прибивают к боку целого блока.
+        if shapes.is_ladder(held):
+            dx, dz = hit[0] - target[0], hit[2] - target[2]
+
+            if hit[1] != target[1] or not hit_block.is_opaque:
+                return
+
+            side = next(side for side, offset in shapes.OFFSETS.items() if offset == (dx, dz))
+            self.world.set_block(*target, Block(held, shapes.LadderState(side)))
+            self.world.notify(*target)
+            self.rebuild_around(target[0], target[2])
+            self.placed(held, target)
             return
 
         # Факел стоит только на целом блоке, зато сквозь него можно ходить.
         if held in TORCHES:
             ground = self.world.get_block(target[0], target[1] + 1, target[2])
 
-            if ground is None or not ground.is_cube:
+            # Как в оригинале, факел встаёт и на забор.
+            if ground is None or not (ground.is_cube or shapes.is_fence(ground.type)):
                 return
 
         # Цветы и саженцы сажают только на траву или землю. Сквозь них тоже ходят.
+        # Тростник сажают у воды или на другой тростник.
+        elif held == plants.CANE:
+            if not plants.cane_supported(self.world, *target):
+                return
+
         elif plants.is_plant(held):
-            if not plants.can_stand_on(self.world.get_block(target[0], target[1] + 1, target[2])):
+            if not plants.can_stand_on(self.world.get_block(target[0], target[1] + 1, target[2]), plants.placed_type(held)):
                 return
 
         elif box_touches_block(self.camera.position, target) or self.mob_in_cell(target):
@@ -2138,7 +3093,15 @@ class Game(Engine):
         if held in FACING_BLOCKS:
             state = FacingState(facing_side(self.camera.forward()))
 
-        self.world.set_block(*target, Block(held, state))
+        # Ступеньки поднимаются от игрока: высокая часть там, куда он смотрит.
+        if shapes.is_stairs(held):
+            state = shapes.StairState(structures.side_of(self.camera.forward()))
+
+        # Калитка встаёт поперёк взгляда.
+        if shapes.is_gate(held):
+            state = shapes.GateState(structures.side_of(self.camera.forward()))
+
+        self.world.set_block(*target, Block(plants.placed_type(held), state))
         self.world.notify(*target)
 
         container = make_container(held)
@@ -2171,6 +3134,16 @@ class Game(Engine):
             occupant = self.world.get_block(*cell)
 
             if occupant is not None and not occupant.is_liquid:
+                return
+
+            # В аду вода сразу испаряется, как в оригинале: ведро пустеет с шипением.
+            if held == "water_bucket" and self.dimension == NETHER:
+                self.world_sound("block.fire.extinguish", self.cell_center(cell))
+                self.hand.swing()
+
+                if self.survival:
+                    self.inventory.slots[self.selected_slot] = Stack("bucket")
+
                 return
 
             self.world.set_block(*cell, Block("lava" if held == "lava_bucket" else "water"))
@@ -2319,6 +3292,8 @@ class Game(Engine):
         self.tick_water(dt)
         self.tick_plants(dt)
         self.tick_fire(dt)
+        self.tick_falling(dt)
+        self.tick_decay(dt)
         self.update_ambient_sounds(dt)
         self.update_items(dt)
         self.update_mobs(dt)
@@ -2359,6 +3334,12 @@ class Game(Engine):
         walking = bool(forward or right) and player.on_ground and not player.flying
 
         self.update_player_fire(dt)
+        self.update_portal(dt)
+
+        # Портал перенёс нас в другое измерение: этот кадр закончен.
+        if self.player is not player:
+            return
+
         self.hand.update(dt, self.held_type(), walking)
         self.play_player_sounds()
 
@@ -2419,7 +3400,7 @@ class Game(Engine):
         self.settings.save()
 
     def render(self):
-        extra = self.crack_overlay() + self.item_objects() + self.mob_objects() + self.arrow_objects() if self.in_world else []
+        extra = self.crack_overlay() + self.item_objects() + self.mob_objects() + self.arrow_objects() + self.fireball_objects() + self.falling_objects() if self.in_world else []
 
         if self.net is not None:
             extra += self.net.draw_objects()
@@ -2442,7 +3423,9 @@ class Game(Engine):
         self.engine.animate(FIRE_TEXTURE, self.fire_frame_surfaces(), int(time.perf_counter() * fire_module.FRAME_RATE))
         self.engine.animate(water.LAVA_TEXTURE, self.lava_frame_surfaces(), int(time.perf_counter() * LAVA_FRAME_RATE))
 
-        sky = daytime.sky_at(self.world.time)
+        self.engine.animate(portal_module.PORTAL_TEXTURE, self.portal_frame_surfaces(), int(time.perf_counter() * PORTAL_FRAME_RATE))
+
+        sky = nether.NetherSky.make() if self.dimension == NETHER else daytime.sky_at(self.world.time)
         self.engine.render(self.world, self.render_surface, self.camera, extra, underwater, self.fog_light, sky)
         self.camera.position = eye
         self.camera.fov = fov
@@ -2462,6 +3445,10 @@ class Game(Engine):
 
         if underwater:
             self.gui.tint(self.screen, UNDERWATER_TINT, UNDERWATER_TINT_ALPHA)
+
+        # Стоим в портале: экран заливает его фиолетовым вихрем.
+        if self.in_world and self.portal_time > 0:
+            self.draw_portal_overlay()
 
         # Глаза в лаве: почти ничего не видно, всё оранжевое.
         if self.in_world and self.player.eyes_in_lava:
@@ -2521,11 +3508,27 @@ class Game(Engine):
             if self.terrain is not None:
                 meshed = sum(chunk.meshed for chunk in self.world.chunks.values())
                 biome = self.terrain.biome_at(math.floor(x), math.floor(z))
-                self.engine.render_text(self.screen, f"seed: {self.seed}  biome: {biome}", (0, 160))
+                self.engine.render_text(self.screen, f"seed: {self.seed}  biome: {biome}  dimension: {self.dimension}", (0, 160))
                 self.engine.render_text(self.screen, f"chunks: {len(self.world.chunks)} loaded, {meshed} meshed, {self.loader.generated} generated, work {self.loader.work_time * 1000:.1f} ms", (0, 180))
 
 
         pygame.display.flip()
+
+    def portal_frame_surfaces(self):
+        if self.portal_frames is None:
+            self.portal_frames = textures.portal_frames()
+
+        return self.portal_frames
+
+    def draw_portal_overlay(self):
+        frames = self.portal_frame_surfaces()
+        frame = frames[int(time.perf_counter() * PORTAL_FRAME_RATE) % len(frames)]
+        share = min(1.0, self.portal_time / (PORTAL_TIME if self.survival else CREATIVE_PORTAL_TIME))
+        # Как в оригинале: сначала едва заметно, к концу почти сплошь.
+        share = share * share * 0.8 + 0.2 * share
+        overlay = pygame.transform.scale(frame, self.screen.get_size())
+        overlay.set_alpha(int(PORTAL_OVERLAY_ALPHA * share))
+        self.screen.blit(overlay, (0, 0))
 
     def lava_frame_surfaces(self):
         if self.lava_frames is None:
@@ -2657,6 +3660,13 @@ class Game(Engine):
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 3):
             screen.release(event.pos)
+
+        # Палитра творческого режима листается колесом и ползунком.
+        elif event.type == pygame.MOUSEWHEEL and event.y != 0 and hasattr(screen, "wheel"):
+            screen.wheel(-event.y)
+
+        elif event.type == pygame.MOUSEMOTION and hasattr(screen, "motion"):
+            screen.motion(event.pos)
 
         elif event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_ESCAPE, pygame.K_e):
@@ -2842,6 +3852,16 @@ class Game(Engine):
             self.chat.add(text, color)
 
     # Для команд: координаты как в оригинале, x, y вверх (высота ног), z.
+
+    def place_structure(self, template, origin):
+        """Команда /structure place: шаблон в мир, затем меши задетых чанков."""
+        cells = template.paste(self.world, origin)
+
+        for cell in cells:
+            self.world.notify(*cell)
+            self.collapse_portals(cell)
+
+        self.rebuild_cells({(cell[0], cell[2]) for cell in cells})
 
     def player_position(self):
         x, y, z = self.camera.position

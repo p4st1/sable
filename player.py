@@ -58,6 +58,14 @@ AIR_REFILL = 5.0
 DROWN_INTERVAL = 1.0
 DROWN_DAMAGE = 2
 
+# Лестница: вверх лезут со скоростью 0.12 блока за тик, вниз скользят не быстрее
+# 0.15, а крадучись держатся на месте, как в оригинале.
+CLIMB_SPEED = 0.12 * TICKS
+LADDER_FALL = 0.15 * TICKS
+
+# На такую высоту игрок шагает без прыжка: на ступеньку, как в оригинале.
+STEP_HEIGHT = 0.5 + 0.01
+
 # Отброс от удара моба: скорость в сторону, подскок и как быстро он гаснет.
 KNOCK_SPEED = 6.0
 KNOCK_LIFT = 4.0
@@ -110,6 +118,9 @@ class Player:
 
         # Множитель скорости ходьбы: с натянутым луком игрок идёт медленно.
         self.slowdown = 1.0
+
+        # Упёрся ли в стену в прошлом шаге: так лезут по лестнице.
+        self.pushing_wall = False
 
         # Сколько ещё секунд игрок горит после огня, и накопленное время до урона.
         self.fire_time = 0.0
@@ -275,6 +286,49 @@ class Player:
 
         return x, z
 
+    def on_ladder(self):
+        """Касается ли тело лестницы."""
+        low, high = player_box(self.camera.position)
+
+        for x in range(math.floor(low[0]), math.floor(high[0]) + 1):
+            for y in range(math.floor(low[1]), math.floor(high[1]) + 1):
+                for z in range(math.floor(low[2]), math.floor(high[2]) + 1):
+                    block = self.world.get_block(x, y, z)
+
+                    if block is not None and block.type == "ladder":
+                        return True
+
+        return False
+
+    def step(self, start, delta, liquid):
+        """Шаг с подъёмом: если с земли упёрлись в низкое препятствие (ступеньку),
+        пробуем пройти над ним, подняв ноги на STEP_HEIGHT, и опуститься обратно."""
+        x, y, z = delta
+        moved = move(self.world, start, delta)
+
+        if not self.on_ground or liquid or not (x or z):
+            return moved
+
+        wanted = math.hypot(x, z)
+        got = math.hypot(moved[0] - start[0], moved[2] - start[2])
+
+        if got >= wanted - 1e-6:
+            return moved
+
+        lifted = move(self.world, start, (0.0, -STEP_HEIGHT, 0.0))
+        rise = start[1] - lifted[1]
+
+        if rise <= 1e-6:
+            return moved
+
+        across = move(self.world, lifted, (x, 0.0, z))
+        landed = move(self.world, across, (0.0, rise + max(y, 0.0), 0.0))
+
+        if math.hypot(landed[0] - start[0], landed[2] - start[2]) > got + 1e-6:
+            return landed
+
+        return moved
+
     def press_space(self, time_ms):
         """Двойное нажатие пробела переключает полёт. В выживании летать нельзя."""
         if self.survival:
@@ -333,6 +387,18 @@ class Player:
                 self.events.append(("splash",))
 
             y = self.swim(dt, space, shift)
+        elif self.on_ladder():
+            # На лестнице: упёрся в стену или жмёт прыжок — лезет, крадётся — висит,
+            # иначе медленно сползает. Падение с лестницы не считается.
+            if self.pushing_wall or space:
+                self.velocity = -CLIMB_SPEED
+            elif shift:
+                self.velocity = 0.0
+            else:
+                self.velocity = min(self.velocity + self.gravity * dt, LADDER_FALL)
+
+            y = self.velocity * dt
+            self.fall_start = None
         else:
             if space and self.on_ground:
                 self.velocity = -self.jump_speed
@@ -345,7 +411,10 @@ class Player:
         start = self.camera.position
         start_y = start[1]
 
-        self.camera.position = move(self.world, self.camera.position, (x, y, z))
+        self.camera.position = self.step(start, (x, y, z), liquid)
+
+        moved = math.hypot(self.camera.position[0] - start[0], self.camera.position[2] - start[2])
+        self.pushing_wall = bool(x or z) and moved < math.hypot(x, z) - 1e-6
 
         if y != 0:
             blocked = abs(self.camera.position[1] - (start_y + y)) > 1e-9

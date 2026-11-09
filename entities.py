@@ -59,11 +59,9 @@ def solid_at(world, x, y, z):
     if block is None or not block.is_solid:
         return False
 
-    low, high = block.box()
-
-    return all(
-        cell[axis] + low[axis] <= point <= cell[axis] + high[axis]
-        for axis, point in enumerate((x, y, z))
+    return any(
+        all(cell[axis] + low[axis] <= point <= cell[axis] + high[axis] for axis, point in enumerate((x, y, z)))
+        for low, high in block.boxes(world, cell)
     )
 
 

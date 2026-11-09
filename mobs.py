@@ -1,12 +1,13 @@
-"""Мобы: мирные животные (свинья, корова, овца) и враждебные зомби, скелет и паук.
+"""Мобы: мирные животные (свинья, корова, овца), враждебные зомби, скелет и паук
+и жители ада: свинозомби, гаст и ифрит.
 
 Животные появляются стайками на траве, когда генератор создаёт новый чанк
 (как в оригинале: мирные мобы не появляются из воздуха рядом с игроком).
 Бродят, иногда щиплют траву и смотрят на игрока, после удара убегают,
 а умерев, роняют мясо или шерсть.
 
-Модели и текстуры свои: модель в кубическом стиле из брусков в пикселях (1/16 блока),
-текстура каждого материала генерируется шумом, морда нарисована на голове. Ось Y направлена вниз,
+Модели из брусков в пикселях (1/16 блока), текстуры берутся из ресурс-пака.
+Для новых видов доступны и процедурные материалы. Ось Y мира направлена вниз,
 позиция моба это середина его ступней. Модель смотрит в +z.
 """
 import math
@@ -216,15 +217,9 @@ def noise_tile(rng, color, noise):
     return pixels
 
 
-# Морды: глаза, пятачок и ноздри нарисованы прямо на передней грани головы,
-# а не торчат отдельными брусками. Массив [x, y]: x по ширине грани, y сверху вниз.
+# Процедурные морды рисуются прямо на передней грани головы.
+# Массив [x, y]: x по ширине грани, y сверху вниз.
 # Рисунки симметричны, поэтому не важно, с какой стороны грань развёрнута.
-
-def paint_pig(pixels):
-    pixels[2:6, 4:7] = (222, 118, 128)
-    pixels[2, 5] = pixels[5, 5] = (110, 50, 60)
-    pixels[2, 2] = pixels[5, 2] = (24, 20, 26)
-
 
 def paint_cow(pixels):
     pixels[3:5, 0:4] = (228, 222, 210)
@@ -270,7 +265,6 @@ PAINTED = {
     "spider_face": (SPIDER, 6, paint_spider),
     "skull_face": (BONE, 7, paint_skull),
     "zombie_face": (ZOMBIE_SKIN, 8, paint_zombie),
-    "pig_face": (PIG_SKIN, 9, paint_pig),
     "cow_face": (COW_HIDE, 9, paint_cow),
     "sheep_face_front": (SHEEP_FACE, 7, paint_sheep),
 }
@@ -312,8 +306,7 @@ def material_tile(name):
     return pixels.clip(0, 255)
 
 
-# Модели в кубическом стиле: только туловище, голова и четыре ноги, без
-# торчащих мелочей. Бруски в пикселях: начало, размер (y вверх от ног, +z вперёд),
+# Модели в кубическом стиле. Бруски в пикселях: начало, размер (y вверх от ног, +z вперёд),
 # материал, группа и материалы отдельных граней. Группы поворачиваются вокруг своих точек.
 
 class Part(NamedTuple):
@@ -322,12 +315,59 @@ class Part(NamedTuple):
     material: str
     group: str = "body"
     faces: dict = {}
+    # Для готовой текстуры: четыре UV-угла каждой грани в порядке box_face.
+    uvs: dict = None
+    # Отдельная текстура детали (например, шерсть) и размер её развёртки.
+    texture: str = None
+    texture_size: tuple = (64, 32)
 
     def material_of(self, face):
         return self.faces.get(face, self.material)
 
 
-def legs(size, xs, zs, material):
+def box_uvs(offset, size, mirror=False):
+    """Развёртка кубоида Minecraft: UV в пикселях, передняя грань смотрит в +z."""
+    u, v = offset
+    w, h, d = size
+    a, b, c, e = u + d, u + d + w, u + 2 * d + w, u + 2 * d + 2 * w
+    top, bottom = v + d, v + d + h
+
+    faces = {
+        "top": ((a, v), (b, v), (b, top), (a, top)),
+        "bottom": ((b, v), (b, top), (b + w, top), (b + w, v)),
+        "front": ((a, top), (b, top), (b, bottom), (a, bottom)),
+        "back": ((e, top), (e, bottom), (c, bottom), (c, top)),
+        "right": ((c, top), (c, bottom), (b, bottom), (b, top)),
+        "left": ((u, top), (a, top), (a, bottom), (u, bottom)),
+    }
+
+    if mirror:
+        # Отражаем по x, в том числе меняем местами боковые грани конечностей.
+        reflected = {
+            "top": ("top", (1, 0, 3, 2)), "bottom": ("bottom", (3, 2, 1, 0)),
+            "front": ("front", (1, 0, 3, 2)), "back": ("back", (3, 2, 1, 0)),
+            "right": ("left", (0, 3, 2, 1)), "left": ("right", (0, 3, 2, 1)),
+        }
+        return {face: tuple(faces[source][index] for index in order) for face, (source, order) in reflected.items()}
+
+    return faces
+
+
+def horizontal_uvs(offset, size):
+    """Развёртка вертикального туловища после поворота в горизонтальное положение."""
+    upright = box_uvs(offset, size)
+
+    return {
+        "top": upright["back"][1:] + upright["back"][:1],
+        "bottom": upright["front"][3:] + upright["front"][:3],
+        "front": upright["top"],
+        "back": upright["bottom"],
+        "right": upright["right"][1:] + upright["right"][:1],
+        "left": upright["left"][3:] + upright["left"][:3],
+    }
+
+
+def legs(size, xs, zs, material, uv=None):
     """Четыре ноги: группы leg0..leg3, у каждой точка поворота сверху посередине."""
     parts, pivots = [], {}
     index = 0
@@ -335,7 +375,8 @@ def legs(size, xs, zs, material):
     for z in zs:
         for x in xs:
             name = f"leg{index}"
-            parts.append(Part((x, 0, z), size, material, name))
+            uvs = None if uv is None else box_uvs(uv, size, mirror=bool(index % 2))
+            parts.append(Part((x, 0, z), size, material, name, uvs=uvs))
             pivots[name] = (x + size[0] / 2, size[1], z + size[2] / 2)
             index += 1
 
@@ -365,96 +406,176 @@ class Kind(NamedTuple):
     climbs: bool = False
     leaps: bool = False
     daylight_neutral: bool = False
+    # Готовая текстура и размер её развёртки; None оставляет процедурные материалы.
+    texture: str = None
+    texture_size: tuple = (64, 32)
+    # Летает (гаст, ифрит): без силы тяжести, плывёт к своей цели.
+    flies: bool = False
+    # Нейтральный (свинозомби): нападает, только если его или соседей ударили.
+    neutral: bool = False
+    # Не боится огня и лавы.
+    fireproof: bool = False
+    # Где появляется: "overworld" или "nether".
+    dimension: str = "overworld"
+    # Во сколько раз модель больше своих пикселей (гаст огромный).
+    scale: float = 1.0
+    # Стреляет огненными шарами: "large" как гаст или "small" как ифрит.
+    fireballs: str = None
+    # Текстура, пока моб готовится выстрелить (гаст открывает глаза).
+    charging_texture: str = None
 
 
 def pig_kind():
-    leg_parts, leg_pivots = legs((3, 5, 3), (-4.5, 1.5), (-5.5, 2.5), "pig_skin")
+    """Классическая свинья: кубическая голова, отдельный пятачок и короткие ноги."""
+    leg_parts, leg_pivots = legs((4, 6, 4), (-5, 1), (-9, 3), "pig_skin")
+    leg_uvs = box_uvs((0, 16), (4, 6, 4))
+
+    # В развёртке туловище стоит вертикально (10 x 16 x 8), в модели лежит.
+    # Поворачиваем и грани, и их UV, чтобы хвост оказался сзади, а спина сверху.
+    body_uvs = horizontal_uvs((28, 8), (10, 16, 8))
+    # В этом паке область пятачка (16, 16) прозрачна: он нарисован на морде.
+    # Берём нос и прилегающую кожу оттуда, сохраняя один texel на пиксель модели.
+    snout_uvs = {
+        "top": ((10, 11), (14, 11), (14, 12), (10, 12)),
+        "bottom": ((10, 15), (10, 16), (14, 16), (14, 15)),
+        "front": ((10, 12), (14, 12), (14, 15), (10, 15)),
+        "back": ((14, 12), (14, 15), (10, 15), (10, 12)),
+        "right": ((15, 12), (15, 15), (14, 15), (14, 12)),
+        "left": ((9, 12), (10, 12), (10, 15), (9, 15)),
+    }
 
     parts = (
-        Part((-5, 5, -6.5), (10, 7, 13), "pig_skin"),
-        Part((-4, 6, 6.5), (8, 7, 6), "pig_skin", "head", {"front": "pig_face"}),
-        *leg_parts,
+        Part((-5, 6, -10), (10, 8, 16), "pig_skin", uvs=body_uvs),
+        Part((-4, 8, 6), (8, 8, 8), "pig_skin", "head", uvs=box_uvs((0, 0), (8, 8, 8))),
+        Part((-2, 9, 14), (4, 3, 1), "pig_skin", "head", uvs=snout_uvs),
+        *(part._replace(uvs=leg_uvs) for part in leg_parts),
     )
 
-    return Kind("pig", 10, 0.45, 0.85, 1.2, 2.8, (("porkchop", 1, 3),), parts, {"head": (0, 9, 6.5), **leg_pivots})
+    return Kind(
+        "pig", 10, 0.45, 0.9, 1.2, 2.8, (("porkchop", 1, 3),), parts,
+        {"head": (0, 12, 6), **leg_pivots},
+        texture="assets/minecraft/textures/entity/pig/pig.png",
+    )
 
 
 def cow_kind():
-    leg_parts, leg_pivots = legs((4, 10, 4), (-5.5, 1.5), (-8, 4.5), "cow_leg")
+    """Корова: длинное туловище, высокая голова, два рога и вымя под животом."""
+    leg_parts, leg_pivots = legs((4, 12, 4), (-6, 2), (-9, 4), "cow_leg", uv=(0, 16))
 
     parts = (
-        Part((-6, 10, -8.5), (12, 9, 17), "cow_hide"),
-        Part((-4, 13, 8.5), (8, 7, 6), "cow_hide", "head", {"front": "cow_face"}),
+        Part((-6, 12, -10), (12, 10, 18), "cow_hide", uvs=horizontal_uvs((18, 4), (12, 18, 10))),
+        Part((-2, 11, -8), (4, 1, 6), "cow_hide", uvs=horizontal_uvs((52, 0), (4, 6, 1))),
+        Part((-4, 16, 8), (8, 8, 6), "cow_hide", "head", uvs=box_uvs((0, 0), (8, 8, 6))),
+        Part((-5, 22, 11), (1, 3, 1), "bone", "head", uvs=box_uvs((22, 0), (1, 3, 1))),
+        Part((4, 22, 11), (1, 3, 1), "bone", "head", uvs=box_uvs((22, 0), (1, 3, 1), mirror=True)),
         *leg_parts,
     )
 
     drops = (("beef", 1, 3), ("leather", 0, 2))
 
-    return Kind("cow", 10, 0.45, 1.3, 1.0, 2.4, drops, parts, {"head": (0, 16, 8.5), **leg_pivots})
+    return Kind(
+        "cow", 10, 0.45, 1.3, 1.0, 2.4, drops, parts, {"head": (0, 20, 8), **leg_pivots},
+        texture="assets/minecraft/textures/entity/cow/cow.png",
+    )
 
 
 def sheep_kind():
-    leg_parts, leg_pivots = legs((3, 8, 3), (-4.5, 1.5), (-6.5, 3.5), "sheep_leg")
+    """Овца: базовая модель и увеличенные бруски шерсти с отдельной текстурой."""
+    leg_parts, leg_pivots = legs((4, 12, 4), (-5, 1), (-9, 3), "sheep_leg", uv=(0, 16))
+    wool = "assets/minecraft/textures/entity/sheep/sheep_fur.png"
+    body_uvs = horizontal_uvs((28, 8), (8, 16, 6))
+    wool_legs = tuple(
+        Part(
+            (part.low[0] - 0.5, 5.5, part.low[2] - 0.5), (5, 7, 5), "wool", part.group,
+            uvs=box_uvs((0, 16), (4, 6, 4), mirror=bool(index % 2)), texture=wool,
+        )
+        for index, part in enumerate(leg_parts)
+    )
 
     parts = (
-        Part((-5.5, 8, -7.5), (11, 10, 15), "wool"),
-        # Макушка головы в шерсти, морда тёмная.
-        Part((-3, 12, 7.5), (6, 7, 6), "sheep_face", "head", {"front": "sheep_face_front", "top": "wool"}),
+        Part((-4, 12, -10), (8, 6, 16), "sheep_face", uvs=body_uvs),
+        Part((-3, 16, 6), (6, 6, 8), "sheep_face", "head", uvs=box_uvs((0, 0), (6, 6, 8))),
         *leg_parts,
+        # Шерсть выступает на 1.75 пикселя на теле, 0.6 на голове и 0.5 на ногах.
+        Part((-5.75, 10.25, -11.75), (11.5, 9.5, 19.5), "wool", uvs=body_uvs, texture=wool),
+        Part((-3.6, 15.4, 5.4), (7.2, 7.2, 7.2), "wool", "head", uvs=box_uvs((0, 0), (6, 6, 6)), texture=wool),
+        *wool_legs,
     )
 
     drops = (("white_wool", 1, 1),)
 
-    return Kind("sheep", 8, 0.45, 1.2, 1.1, 2.6, drops, parts, {"head": (0, 15, 7.5), **leg_pivots})
+    return Kind(
+        "sheep", 8, 0.45, 1.2, 1.1, 2.6, drops, parts, {"head": (0, 18, 8), **leg_pivots},
+        texture="assets/minecraft/textures/entity/sheep/sheep.png",
+    )
 
 
 def zombie_kind():
-    """Зомби: ноги, туловище, руки вперёд и голова. Пропорции свои."""
+    """Зомби: голова 8 x 8, туловище 8 x 12 и конечности 4 x 12."""
     parts = (
-        Part((-3.75, 0, -1.75), (3.5, 11, 3.5), "trousers", "leg0"),
-        Part((0.25, 0, -1.75), (3.5, 11, 3.5), "trousers", "leg1"),
-        Part((-4, 11, -2.5), (8, 11, 5), "tunic"),
-        Part((-7, 11, -1.5), (3, 11, 3), "zombie_skin", "arm0"),
-        Part((4, 11, -1.5), (3, 11, 3), "zombie_skin", "arm1"),
-        Part((-3.5, 22, -3.5), (7, 7, 7), "zombie_skin", "head", {"front": "zombie_face"}),
+        Part((-4, 0, -2), (4, 12, 4), "trousers", "leg0", uvs=box_uvs((0, 16), (4, 12, 4))),
+        Part((0, 0, -2), (4, 12, 4), "trousers", "leg1", uvs=box_uvs((0, 16), (4, 12, 4), mirror=True)),
+        Part((-4, 12, -2), (8, 12, 4), "tunic", uvs=box_uvs((16, 16), (8, 12, 4))),
+        Part((-8, 12, -2), (4, 12, 4), "zombie_skin", "arm0", uvs=box_uvs((40, 16), (4, 12, 4))),
+        Part((4, 12, -2), (4, 12, 4), "zombie_skin", "arm1", uvs=box_uvs((40, 16), (4, 12, 4), mirror=True)),
+        Part((-4, 24, -4), (8, 8, 8), "zombie_skin", "head", uvs=box_uvs((0, 0), (8, 8, 8))),
     )
 
     pivots = {
-        "leg0": (-2, 11, 0), "leg1": (2, 11, 0),
-        "arm0": (-5.5, 21, 0), "arm1": (5.5, 21, 0),
-        "head": (0, 22, 0),
+        "leg0": (-2, 12, 0), "leg1": (2, 12, 0),
+        "arm0": (-5, 22, 0), "arm1": (5, 22, 0),
+        "head": (0, 24, 0),
     }
 
     return Kind(
         "zombie", 20, 0.3, 1.85, 1.0, 0.0, (("rotten_flesh", 0, 2),), parts, pivots,
         hostile=True, attack=3, chase_speed=2.3, burns=True,
+        # В паке файл 64 x 64, но обе стороны используют старые руки и ноги сверху.
+        texture="assets/minecraft/textures/entity/zombie/zombie.png", texture_size=(64, 64),
+    )
+
+
+def skeleton_bow():
+    """Изогнутый лук с тетивой; цвета берём из текстуры предмета."""
+    texture = "assets/minecraft/textures/item/bow.png"
+
+    def part(low, size, pixel):
+        u, v = pixel
+        # Маленькие бруски лука однотонные, каждый с цветом пикселя предмета.
+        uvs = {face: ((u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)) for face in FACES}
+        return Part(low, size, "bow_wood", "arm1", uvs=uvs, texture=texture, texture_size=(16, 16))
+
+    return (
+        part((4.5, 11, -2), (1, 1, 4), (3, 9)),
+        *(part((4.5, y, z), (1, 1, length), (2, 14)) for y, z, length in (
+            (12, -5, 3), (12, 2, 3), (13, -7, 2), (13, 5, 2), (14, -8, 1), (14, 7, 1),
+        )),
+        part((4.75, 14.25, -7.5), (0.5, 0.5, 15), (5, 12)),
     )
 
 
 def skeleton_kind():
-    """Скелет: тонкие кости, рёбра, череп и лук в правой руке. Пропорции свои."""
+    """Скелет: кубический череп, рёбра с прозрачными промежутками и тонкие кости."""
     parts = (
-        Part((-2.75, 0, -1.25), (2.5, 11, 2.5), "bone", "leg0"),
-        Part((0.25, 0, -1.25), (2.5, 11, 2.5), "bone", "leg1"),
-        Part((-3, 11, -1.5), (6, 2, 3), "bone_dark"),
-        Part((-1, 13, -1), (2, 4, 2), "bone_dark"),
-        Part((-3.5, 17, -2), (7, 6, 4), "ribs", faces={"top": "bone", "bottom": "bone"}),
-        Part((-5.5, 13, -1), (2, 10, 2), "bone", "arm0"),
-        Part((3.5, 13, -1), (2, 10, 2), "bone", "arm1"),
-        # Лук лежит вдоль руки поперёк: когда рука поднята вперёд, он встаёт вертикально.
-        Part((4, 12.5, -5), (1, 1, 10), "bow_wood", "arm1"),
-        Part((-3.5, 23, -3.5), (7, 7, 7), "bone", "head", {"front": "skull_face"}),
+        Part((-3, 0, -1), (2, 12, 2), "bone", "leg0", uvs=box_uvs((0, 16), (2, 12, 2))),
+        Part((1, 0, -1), (2, 12, 2), "bone", "leg1", uvs=box_uvs((0, 16), (2, 12, 2), mirror=True)),
+        Part((-4, 12, -2), (8, 12, 4), "ribs", uvs=box_uvs((16, 16), (8, 12, 4))),
+        Part((-6, 12, -1), (2, 12, 2), "bone", "arm0", uvs=box_uvs((40, 16), (2, 12, 2))),
+        Part((4, 12, -1), (2, 12, 2), "bone", "arm1", uvs=box_uvs((40, 16), (2, 12, 2), mirror=True)),
+        Part((-4, 24, -4), (8, 8, 8), "bone", "head", uvs=box_uvs((0, 0), (8, 8, 8))),
+        *skeleton_bow(),
     )
 
     pivots = {
-        "leg0": (-1.5, 11, 0), "leg1": (1.5, 11, 0),
-        "arm0": (-4.5, 22, 0), "arm1": (4.5, 22, 0),
-        "head": (0, 23, 0),
+        "leg0": (-2, 12, 0), "leg1": (2, 12, 0),
+        "arm0": (-5, 22, 0), "arm1": (5, 22, 0),
+        "head": (0, 24, 0),
     }
 
     return Kind(
         "skeleton", 20, 0.3, 1.9, 1.0, 0.0, (("bone", 0, 2), ("arrow", 0, 2)), parts, pivots,
         hostile=True, chase_speed=2.3, burns=True, ranged=True,
+        texture="assets/minecraft/textures/entity/skeleton/skeleton.png",
     )
 
 
@@ -465,37 +586,173 @@ SPIDER_LEGS = {
         [(1, base) for base in (0.7, 0.25, -0.25, -0.7)] + [(-1, base) for base in (0.7, 0.25, -0.25, -0.7)]
     )
 }
-SPIDER_LEG_LENGTH = 14
-SPIDER_LEG_HEIGHT = 5.5
+SPIDER_LEG_LENGTH = 16
+SPIDER_LEG_HEIGHT = 9
 SPIDER_LEG_TILT = math.asin(SPIDER_LEG_HEIGHT / SPIDER_LEG_LENGTH)
 
 
 def spider_kind():
-    """Паук: брюшко, грудь, голова с восемью глазами и восемь растопыренных ног. Пропорции свои."""
+    """Паук: брюшко 10 x 8 x 12, грудь 6 x 6 и голова 8 x 8 с восемью глазами."""
     parts = [
-        Part((-5, 3, -12), (10, 8, 11), "spider_body"),
-        Part((-3.5, 3, -1), (7, 5, 7), "spider_body"),
-        Part((-3, 3.5, 6), (6, 5, 4), "spider_body", "head", {"front": "spider_face"}),
+        Part((-5, 5, -15), (10, 8, 12), "spider_body", uvs=box_uvs((0, 12), (10, 8, 12))),
+        Part((-3, 6, -3), (6, 6, 6), "spider_body", uvs=box_uvs((0, 0), (6, 6, 6))),
+        Part((-4, 5, 3), (8, 8, 8), "spider_body", "head", uvs=box_uvs((32, 4), (8, 8, 8))),
     ]
-    pivots = {"head": (0, 6, 6)}
-    attach = (4.5, 2.5, 0.5, -1.5)
+    pivots = {"head": (0, 9, 3)}
+    attach = (1, 0, -1, -2)
 
     for name, (side, _) in SPIDER_LEGS.items():
         z = attach[int(name[4:]) % 4]
-        x = 3.5 if side > 0 else -3.5 - SPIDER_LEG_LENGTH
-        parts.append(Part((x, SPIDER_LEG_HEIGHT - 0.75, z - 0.75), (SPIDER_LEG_LENGTH, 1.5, 1.5), "spider_leg", name))
-        pivots[name] = (3.5 * side, SPIDER_LEG_HEIGHT, z)
+        x = 3 if side > 0 else -3 - SPIDER_LEG_LENGTH
+        parts.append(Part(
+            (x, SPIDER_LEG_HEIGHT - 1, z - 1), (SPIDER_LEG_LENGTH, 2, 2), "spider_leg", name,
+            uvs=box_uvs((18, 0), (SPIDER_LEG_LENGTH, 2, 2), mirror=side < 0),
+        ))
+        pivots[name] = (4 * side, SPIDER_LEG_HEIGHT, z)
 
     return Kind(
         "spider", 16, 0.7, 0.9, 1.0, 0.0, (("string", 0, 2),), tuple(parts), pivots,
         hostile=True, attack=2, chase_speed=3.0, climbs=True, leaps=True, daylight_neutral=True,
+        texture="assets/minecraft/textures/entity/spider/spider.png",
     )
 
 
-KINDS = {kind.name: kind for kind in (pig_kind(), cow_kind(), sheep_kind(), zombie_kind(), skeleton_kind(), spider_kind())}
+def golden_sword():
+    """Золотой меч в руке свинозомби: кубики по диагонали картинки предмета.
+
+    В опущенной руке клинок смотрит вниз и вперёд, а в вытянутой вперёд руке
+    поднимается под углом, как в оригинале.
+    """
+    texture = "assets/minecraft/textures/item/golden_sword.png"
+    image = pygame.image.load(texture)
+    parts = []
+
+    # Рукоять в левом нижнем углу картинки, остриё в правом верхнем.
+    for step in range(16):
+        u, v = step, 15 - step
+
+        if image.get_at((u, v)).a == 0:
+            continue
+
+        uvs = {face: ((u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)) for face in FACES}
+        # От кисти (y = 11) вперёд и вниз вдоль руки.
+        low = (5.5, 12 - (step - 2) * 0.75, -1.5 + (step - 2) * 0.75)
+        parts.append(Part(low, (1, 1, 1), "bone", "arm1", uvs=uvs, texture=texture, texture_size=(16, 16)))
+
+    return tuple(parts)
+
+
+def zombie_pigman_kind():
+    """Свинозомби: модель зомби, слой «шляпы» с ухом и золотой меч."""
+    parts = (
+        Part((-4, 0, -2), (4, 12, 4), "trousers", "leg0", uvs=box_uvs((0, 16), (4, 12, 4))),
+        Part((0, 0, -2), (4, 12, 4), "trousers", "leg1", uvs=box_uvs((0, 16), (4, 12, 4), mirror=True)),
+        Part((-4, 12, -2), (8, 12, 4), "tunic", uvs=box_uvs((16, 16), (8, 12, 4))),
+        Part((-8, 12, -2), (4, 12, 4), "zombie_skin", "arm0", uvs=box_uvs((40, 16), (4, 12, 4))),
+        Part((4, 12, -2), (4, 12, 4), "zombie_skin", "arm1", uvs=box_uvs((40, 16), (4, 12, 4), mirror=True)),
+        Part((-4, 24, -4), (8, 8, 8), "zombie_skin", "head", uvs=box_uvs((0, 0), (8, 8, 8))),
+        Part((-4.5, 23.5, -4.5), (9, 9, 9), "zombie_skin", "head", uvs=box_uvs((32, 0), (8, 8, 8))),
+        *golden_sword(),
+    )
+
+    pivots = {
+        "leg0": (-2, 12, 0), "leg1": (2, 12, 0),
+        "arm0": (-5, 22, 0), "arm1": (5, 22, 0),
+        "head": (0, 24, 0),
+    }
+
+    # Как в 1.0: гнилая плоть и золотой самородок.
+    drops = (("rotten_flesh", 0, 1), ("gold_nugget", 0, 1))
+
+    return Kind(
+        "zombie_pigman", 20, 0.3, 1.85, 1.0, 0.0, drops, parts, pivots,
+        hostile=True, attack=5, chase_speed=3.6, neutral=True, fireproof=True, dimension="nether",
+        texture="assets/minecraft/textures/entity/zombie_pigman.png", texture_size=(64, 64),
+    )
+
+
+# Щупальца гаста: (x, z, длина) в пикселях модели, как в оригинале девять штук.
+GHAST_TENTACLES = tuple(
+    (((index % 3 - index // 3 % 2 * 0.5 + 0.25) / 2 * 2 - 1) * 5, (index // 3 / 2 * 2 - 1) * 5, length)
+    for index, length in enumerate((10, 13, 9, 12, 8, 14, 11, 9, 12))
+)
+
+
+def ghast_kind():
+    """Гаст: куб 16 x 16 x 16 пикселей в четыре раза больше обычного и девять щупалец."""
+    parts = [Part((-8, 0, -8), (16, 16, 16), "bone", uvs=box_uvs((0, 0), (16, 16, 16)))]
+    pivots = {}
+
+    for index, (x, z, length) in enumerate(GHAST_TENTACLES):
+        name = f"tentacle{index}"
+        parts.append(Part((x - 1, -length, z - 1), (2, length, 2), "bone", name, uvs=box_uvs((0, 0), (2, length, 2))))
+        pivots[name] = (x, 0, z)
+
+    drops = (("gunpowder", 0, 2), ("ghast_tear", 0, 1))
+
+    return Kind(
+        "ghast", 10, 2.0, 4.0, 1.6, 0.0, drops, tuple(parts), pivots,
+        hostile=True, chase_speed=1.6, flies=True, fireproof=True, dimension="nether", scale=4.0,
+        fireballs="large", texture="assets/minecraft/textures/entity/ghast/ghast.png",
+        charging_texture="assets/minecraft/textures/entity/ghast/ghast_shooting.png",
+    )
+
+
+BLAZE_RODS = 12
+
+
+def blaze_kind():
+    """Ифрит: голова 8 x 8 и двенадцать огненных стержней в три кольца вокруг."""
+    parts = [Part((-4, 16, -4), (8, 8, 8), "bone", "head", uvs=box_uvs((0, 0), (8, 8, 8)))]
+    pivots = {"head": (0, 16, 0)}
+
+    for index in range(BLAZE_RODS):
+        name = f"rod{index}"
+        ring = index // 4
+        # Кольца на разной высоте: верхнее под головой, нижнее у земли.
+        y = (14, 7, 0)[ring]
+        radius = (9, 7, 5)[ring]
+        parts.append(Part((radius - 1, y, -1), (2, 8, 2), "bone", name, uvs=box_uvs((0, 16), (2, 8, 2))))
+        pivots[name] = (0, y, 0)
+
+    return Kind(
+        "blaze", 20, 0.3, 1.8, 1.4, 0.0, (("blaze_rod", 0, 1),), tuple(parts), pivots,
+        hostile=True, attack=6, chase_speed=1.8, flies=True, fireproof=True, dimension="nether",
+        fireballs="small", texture="assets/minecraft/textures/entity/blaze.png",
+    )
+
+
+KINDS = {kind.name: kind for kind in (
+    pig_kind(), cow_kind(), sheep_kind(), zombie_kind(), skeleton_kind(), spider_kind(),
+    zombie_pigman_kind(), ghast_kind(), blaze_kind(),
+)}
 # Кто пасётся стайками в новых чанках.
-PASSIVE = sorted(name for name, kind in KINDS.items() if not kind.hostile)
-HOSTILE = sorted(name for name, kind in KINDS.items() if kind.hostile)
+PASSIVE = sorted(name for name, kind in KINDS.items() if not kind.hostile and kind.dimension == "overworld")
+HOSTILE = sorted(name for name, kind in KINDS.items() if kind.hostile and kind.dimension == "overworld")
+
+# Ад: свинозомби бродят толпами, гасты летают в больших пещерах, ифриты живут в крепостях.
+NETHER_HOSTILE = ("zombie_pigman", "ghast")
+PIGMAN_GROUP = (2, 4)
+GHAST_CHANCE = 0.08
+MAX_GHASTS = 3
+MAX_BLAZES = 4
+# Свинозомби злится столько секунд, и злость передаётся всем вокруг на столько блоков.
+ANGER_TIME = (20.0, 40.0)
+ANGER_RANGE = 32.0
+
+# Гаст: видит игрока издалека, бродит в пределах своего куба, стреляет раз в столько секунд.
+GHAST_SIGHT = 64.0
+GHAST_WANDER = 16.0
+GHAST_CHARGE = 1.0
+GHAST_COOLDOWN = 2.0
+# Ифрит: держится рядом с игроком чуть выше него, стреляет очередями по три.
+BLAZE_SIGHT = 32.0
+BLAZE_HOVER = 3.0
+BLAZE_BURST = 3
+BLAZE_SHOT_GAP = 0.3
+BLAZE_COOLDOWN = 3.0
+BLAZE_FALL = 1.2
+FLY_RESPONSE = 1.5
 
 
 def angle_step(current, target, limit):
@@ -566,6 +823,17 @@ class Mob:
         self.shots = []
         # Разозлённый ударом паук нападает и днём.
         self.provoked = False
+        # Свинозомби злится столько секунд. alerted: только что ударили, игра злит соседей.
+        self.anger = 0.0
+        self.alerted = False
+        # Огненные шары за шаг: (откуда, куда целится). Их забирает игра.
+        self.fireballs = []
+        # Гаст и ифрит: куда летят и сколько копят на выстрел.
+        self.fly_target = None
+        self.charge = 0.0
+        self.burst = 0
+        # Вид для модели: у заряжающего гаста другая текстура.
+        self.model_kind = None
 
         # Звуки за шаг: "ambient", "hurt", "death", "step". Их забирает игра.
         self.sounds = []
@@ -619,6 +887,10 @@ class Mob:
             self.velocity = [dx / length * KNOCKBACK, -KNOCKBACK_LIFT, dz / length * KNOCKBACK]
             self.on_ground = False
 
+        if source is not None and self.kind.neutral:
+            self.anger = random.uniform(*ANGER_TIME)
+            self.alerted = True
+
         if self.health <= 0:
             self.dying = 0.0
             self.walk = (0.0, 0.0)
@@ -649,6 +921,11 @@ class Mob:
     def think(self, world, dt, eye, target):
         self.timer -= dt
         self.attack_cooldown = max(0.0, self.attack_cooldown - dt)
+        self.anger = max(0.0, self.anger - dt)
+
+        if self.kind.flies:
+            self.think_flying(world, dt, eye, target)
+            return
         x, y, z = self.position
         speed = 0.0
         heading = self.yaw
@@ -734,6 +1011,97 @@ class Mob:
 
         self.walk = (math.sin(heading) * speed, math.cos(heading) * speed)
         self.heading = heading if speed > 0 else None
+        self.update_head(dt, eye)
+
+    def think_flying(self, world, dt, eye, target):
+        """Гаст бродит по воздуху и стреляет издалека, ифрит висит рядом с игроком."""
+        x, y, z = self.position
+        center = self.center
+        self.model_kind = None
+        self.chasing = False
+        sight = GHAST_SIGHT if self.kind.fireballs == "large" else BLAZE_SIGHT
+        sees = False
+
+        if target is not None:
+            chest = (target[0], target[1] - 1.0, target[2])
+            distance = math.dist(center, chest)
+            sees = distance < sight and self.can_see(world, center, chest, distance)
+
+        if self.kind.fireballs == "large":
+            # Новая точка, когда долетели, застряли или давно летим.
+            if self.fly_target is None or self.timer <= 0 or self.stuck > STUCK_TIME or math.dist(self.fly_target, self.position) < 1.0:
+                self.fly_target = (
+                    x + random.uniform(-GHAST_WANDER, GHAST_WANDER),
+                    y + random.uniform(-GHAST_WANDER, GHAST_WANDER) * 0.5,
+                    z + random.uniform(-GHAST_WANDER, GHAST_WANDER),
+                )
+                self.timer = WANDER_TIMEOUT
+                self.stuck = 0.0
+
+            if sees:
+                self.heading = math.atan2(target[0] - x, target[2] - z)
+                self.charge += dt
+                self.chasing = True
+
+                if self.charge >= GHAST_CHARGE * 0.5:
+                    self.model_kind = "charging"
+
+                if self.charge >= GHAST_CHARGE and "warn" not in self.sounds:
+                    if self.charge - dt < GHAST_CHARGE:
+                        self.sounds.append("warn")
+
+                if self.charge >= GHAST_CHARGE + 0.5:
+                    self.fireballs.append((center, chest))
+                    self.sounds.append("shoot")
+                    self.charge = -GHAST_COOLDOWN
+            else:
+                self.charge = max(0.0, self.charge - dt)
+                tx, _, tz = self.fly_target
+                self.heading = math.atan2(tx - x, tz - z)
+
+            goal = self.fly_target
+            speed = self.kind.walk_speed
+        else:
+            # Ифрит держится над игроком на несколько блоков и стреляет очередями.
+            goal = None
+            speed = self.kind.chase_speed
+
+            if target is not None and math.dist(target, self.position) < sight:
+                self.chasing = True
+                self.heading = math.atan2(target[0] - x, target[2] - z)
+                flat = math.hypot(target[0] - x, target[2] - z)
+                goal = (target[0], target[1] - BLAZE_HOVER, target[2]) if flat > 4 else (x, target[1] - BLAZE_HOVER, z)
+
+                if sees:
+                    self.charge += dt
+
+                    if self.burst > 0 and self.charge >= BLAZE_SHOT_GAP:
+                        self.fireballs.append((center, (target[0], target[1] - 1.0, target[2])))
+                        self.sounds.append("shoot")
+                        self.burst -= 1
+                        self.charge = 0.0 if self.burst else -BLAZE_COOLDOWN
+                    elif self.burst == 0 and self.charge >= 0:
+                        self.burst = BLAZE_BURST
+                        self.charge = 0.0
+
+                # Ближний бой: подлетел вплотную, бьёт как зомби.
+                if flat < self.kind.half_width + ATTACK_REACH and abs(target[1] - y) < ATTACK_HEIGHT and self.attack_cooldown <= 0:
+                    self.attack_cooldown = ATTACK_COOLDOWN
+                    self.attacks.append(((target[0] - x) / (flat or 1.0), (target[2] - z) / (flat or 1.0)))
+            else:
+                self.charge = 0.0
+                self.burst = 0
+
+        if goal is None:
+            self.walk = (0.0, 0.0)
+            self.fly = (0.0, BLAZE_FALL if self.kind.fireballs == "small" else 0.0, 0.0)
+        else:
+            dx, dy, dz = (goal[axis] - self.position[axis] for axis in range(3))
+            length = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+            pace = min(speed, length * 2)
+            self.fly = (dx / length * pace, dy / length * pace, dz / length * pace)
+            self.walk = (self.fly[0], self.fly[2])
+
         self.update_head(dt, eye)
 
     @property
@@ -851,14 +1219,20 @@ class Mob:
 
         walk_x, walk_z = self.walk
 
-        if liquid:
+        if self.kind.flies:
+            # Летун плавно набирает нужную скорость по всем трём осям. Мёртвый висит.
+            fly = getattr(self, "fly", (0.0, 0.0, 0.0)) if not self.dead else (0.0, 0.0, 0.0)
+            response = min(1.0, dt * FLY_RESPONSE)
+            vy += (fly[1] - vy) * response
+            walk_x, walk_z = fly[0], fly[2]
+        elif liquid:
             vy += (-FLOAT_SPEED - vy) * min(1.0, dt * FLOAT_RESPONSE)
             walk_x *= WATER_SLOWDOWN
             walk_z *= WATER_SLOWDOWN
         else:
             vy = min(TERMINAL_VELOCITY, vy + GRAVITY * dt)
 
-        grip = min(1.0, dt * (GROUND_GRIP if self.on_ground or liquid else AIR_GRIP))
+        grip = min(1.0, dt * (FLY_RESPONSE if self.kind.flies else GROUND_GRIP if self.on_ground or liquid else AIR_GRIP))
         vx += (walk_x - vx) * grip
         vz += (walk_z - vz) * grip
 
@@ -879,7 +1253,9 @@ class Mob:
 
         blocked = any(abs(moved[axis] - wanted[axis]) > 1e-6 for axis in (0, 2))
 
-        if blocked:
+        if blocked and self.kind.flies:
+            self.stuck += dt
+        elif blocked:
             if self.kind.climbs and (walk_x or walk_z):
                 # Паук упёрся в стену и лезет по ней вверх.
                 vy = -CLIMB_SPEED
@@ -926,6 +1302,10 @@ class Mob:
 
         self.burning = ((self.kind.burns and self.sunlit) or self.fire_time > 0) and not self.in_water
 
+        if self.kind.fireproof:
+            self.burning = False
+            self.fire_time = 0.0
+
         if not self.burning:
             self.burn_time = 0.0
             return
@@ -964,6 +1344,20 @@ class Mob:
         if group == "head":
             return rotation_y(self.head_yaw) @ rotation_x(self.head_pitch)
 
+        if group.startswith("tentacle"):
+            # Как в оригинале: щупальца покачиваются, каждое в своей фазе.
+            index = int(group[8:])
+            return rotation_x(0.2 * math.sin(self.age * 6 + index) + 0.4)
+
+        if group.startswith("rod"):
+            # Стержни ифрита кружат вокруг него, кольца в разные стороны, и покачиваются.
+            index = int(group[3:])
+            ring = index // 4
+            direction = (1, -1, 1)[ring]
+            angle = direction * self.age * (1.6, 1.2, 0.9)[ring] + index % 4 * math.pi / 2
+            bob = math.cos(self.age * 2.5 + index) * 0.08
+            return rotation_y(angle) @ rotation_z(bob)
+
         if group.startswith("arm"):
             sign = 1 if group == "arm0" else -1
             return rotation_x(ARM_RAISE + math.sin(self.walk_phase) * ARM_SWAY * sign)
@@ -998,10 +1392,20 @@ class Mob:
             "position": [round(value, 4) for value in self.position],
             "yaw": round(self.yaw, 4),
             "health": self.health,
+            **({"anger": round(self.anger, 1)} if self.anger > 0 else {}),
         }
 
     @classmethod
     def from_json(cls, data):
+        mob = cls.read_json(data)
+
+        if mob is not None and isinstance(data.get("anger"), (int, float)):
+            mob.anger = max(0.0, float(data["anger"]))
+
+        return mob
+
+    @classmethod
+    def read_json(cls, data):
         try:
             kind = data["kind"]
             position = [float(value) for value in data["position"]]
@@ -1138,70 +1542,112 @@ class MobModels:
 
         return self.models[kind.name]
 
-    def atlas(self, kind):
-        """Текстура со всеми материалами моба в ряд: обычная и покрасневшая от удара."""
-        names = sorted({part.material_of(face) for part in kind.parts for face in FACES})
-        pixels = np.concatenate([material_tile(name) for name in names], axis=0)
+    def shown_kind(self, mob):
+        """Вид для модели: заряжающий гаст с открытыми глазами."""
+        if mob.model_kind == "charging" and mob.kind.charging_texture is not None:
+            return mob.kind._replace(name=mob.kind.name + "_charging", texture=mob.kind.charging_texture)
 
-        normal = pygame.Surface(pixels.shape[:2])
-        pygame.surfarray.blit_array(normal, pixels.astype(np.uint8))
+        return mob.kind
+
+    def atlas(self, kind):
+        """Текстуры деталей в одном атласе; альфа шерсти, рёбер и прочих слоёв сохраняется."""
+
+        if kind.texture is not None:
+            paths = list(dict.fromkeys([kind.texture, *(part.texture for part in kind.parts if part.texture is not None)]))
+            images = [pygame.image.load(path) for path in paths]
+            regions, offset = {}, 0
+
+            for path, image in zip(paths, images):
+                regions[path] = (offset, image.get_width(), image.get_height())
+                offset += image.get_width()
+
+            # Один файл оставляем как есть: в частности, свинья сохраняет свой атлас.
+            normal = images[0] if len(images) == 1 else pygame.Surface((offset, max(image.get_height() for image in images)), pygame.SRCALPHA)
+
+            if len(images) > 1:
+                for path, image in zip(paths, images):
+                    normal.blit(image, (regions[path][0], 0))
+
+            pixels = pygame.surfarray.array3d(normal).astype(np.float64)
+        else:
+            names = sorted({part.material_of(face) for part in kind.parts for face in FACES})
+            regions = {name: index for index, name in enumerate(names)}
+            pixels = np.concatenate([material_tile(name) for name in names], axis=0)
+            normal = pygame.Surface(pixels.shape[:2])
+            pygame.surfarray.blit_array(normal, pixels.astype(np.uint8))
 
         # Как в оригинале: при ударе животное краснеет.
         red = pixels * 0.55 + np.array((255, 0, 0)) * 0.45
-        flashed = pygame.Surface(pixels.shape[:2])
-        pygame.surfarray.blit_array(flashed, red.clip(0, 255).astype(np.uint8))
+        flashed = normal.copy()
+        # Меняем только RGB: blit_array сбрасывает альфу готовой текстуры.
+        flashed_pixels = pygame.surfarray.pixels3d(flashed)
+        flashed_pixels[:] = red.clip(0, 255).astype(np.uint8)
+        del flashed_pixels
 
         textures = (
             self.engine.add_texture(f"generated:mob_{kind.name}", normal),
             self.engine.add_texture(f"generated:mob_{kind.name}_hurt", flashed),
         )
 
-        return textures, {name: index for index, name in enumerate(names)}, pixels.shape[0]
+        return textures, regions, normal.get_size()
 
     def build(self, kind):
-        (normal, flashed), tiles, atlas_width = self.atlas(kind)
+        (normal, flashed), regions, (atlas_width, atlas_height) = self.atlas(kind)
         points, triangles, uvs, shades, groups = [], [], [], [], []
 
         # В грани берём кусок материала размером с саму грань (пиксель на пиксель),
         # каждый раз из другого места квадрата, чтобы грани не повторяли друг друга.
         axes = {"top": (0, 2), "bottom": (0, 2), "front": (0, 1), "back": (0, 1), "right": (2, 1), "left": (2, 1)}
 
+        unit = PIXEL * kind.scale
+
         for part_index, part in enumerate(kind.parts):
             x0, y0, z0 = part.low
             sx, sy, sz = part.size
-            low = (x0 * PIXEL, -(y0 + sy) * PIXEL, z0 * PIXEL)
-            high = ((x0 + sx) * PIXEL, -y0 * PIXEL, (z0 + sz) * PIXEL)
+            low = (x0 * unit, -(y0 + sy) * unit, z0 * unit)
+            high = ((x0 + sx) * unit, -y0 * unit, (z0 + sz) * unit)
 
             for face in FACES:
-                material = part.material_of(face)
-                tile = tiles[material] * TILE
                 corners = box_face(face, low, high)
-                axis_u, axis_v = axes[face]
-                width = (high[axis_u] - low[axis_u]) / PIXEL
-                height = (high[axis_v] - low[axis_v]) / PIXEL
-
-                # Морду рисуем с угла квадрата, остальное из случайного места.
-                if material in PAINTED:
-                    offset_u = offset_v = 0
-                else:
-                    seed = zlib.crc32(f"{kind.name}{part_index}{face}".encode("utf-8"))
-                    offset_u = seed % max(1, int(TILE - width))
-                    offset_v = (seed >> 8) % max(1, int(TILE - height))
-
                 first = len(points)
                 points.extend(corners)
                 shades.extend([FACE_SHADE[face]] * 4)
                 groups.extend([part.group] * 4)
 
-                quad = []
+                if kind.texture is not None:
+                    # UV заданы в размере развёртки: работает и с HD ресурс-паком.
+                    path = part.texture or kind.texture
+                    reference_size = part.texture_size if part.texture is not None else kind.texture_size
+                    offset, width, height = regions[path]
+                    quad = np.array(part.uvs[face], dtype=np.float64)
+                    quad += np.sign(quad.mean(axis=0) - quad) * 0.02
+                    quad /= reference_size
+                    quad *= (width / atlas_width, height / atlas_height)
+                    quad[:, 0] += offset / atlas_width
+                else:
+                    material = part.material_of(face)
+                    tile = regions[material] * TILE
+                    axis_u, axis_v = axes[face]
+                    width = (high[axis_u] - low[axis_u]) / unit
+                    height = (high[axis_v] - low[axis_v]) / unit
 
-                for corner in corners:
-                    u = (corner[axis_u] - low[axis_u]) / PIXEL
-                    v = (corner[axis_v] - low[axis_v]) / PIXEL
-                    # Чуть внутрь, чтобы не задеть соседний материал.
-                    u = min(max(u, 0.02), width - 0.02)
-                    v = min(max(v, 0.02), height - 0.02)
-                    quad.append(((tile + offset_u + u) / atlas_width, (offset_v + v) / TILE))
+                    # Морду рисуем с угла квадрата, остальное из случайного места.
+                    if material in PAINTED:
+                        offset_u = offset_v = 0
+                    else:
+                        seed = zlib.crc32(f"{kind.name}{part_index}{face}".encode("utf-8"))
+                        offset_u = seed % max(1, int(TILE - width))
+                        offset_v = (seed >> 8) % max(1, int(TILE - height))
+
+                    quad = []
+
+                    for corner in corners:
+                        u = (corner[axis_u] - low[axis_u]) / unit
+                        v = (corner[axis_v] - low[axis_v]) / unit
+                        # Чуть внутрь, чтобы не задеть соседний материал.
+                        u = min(max(u, 0.02), width - 0.02)
+                        v = min(max(v, 0.02), height - 0.02)
+                        quad.append(((tile + offset_u + u) / atlas_width, (offset_v + v) / TILE))
 
                 for a, b, c in QUAD_TRIANGLES.tolist():
                     triangles.append((first + a, first + b, first + c))
@@ -1217,16 +1663,16 @@ class MobModels:
         for name in dict.fromkeys(groups):
             indices = np.flatnonzero(group_names == name)
             pivot = kind.pivots.get(name)
-            center = None if pivot is None else np.array((pivot[0] * PIXEL, -pivot[1] * PIXEL, pivot[2] * PIXEL))
+            center = None if pivot is None else np.array((pivot[0] * unit, -pivot[1] * unit, pivot[2] * unit))
             parts.append((name, indices, center))
 
         # Мёртвое животное заваливается на правый бок: вокруг его нижнего правого края.
-        side = max(part.low[0] + part.size[0] for part in kind.parts) * PIXEL
+        side = max(part.low[0] + part.size[0] for part in kind.parts) * unit
 
         return (mesh, hurt_mesh), local, parts, side
 
     def draw_object(self, mob, brightness):
-        (mesh, hurt_mesh), local, parts, side = self.get(mob.kind)
+        (mesh, hurt_mesh), local, parts, side = self.get(self.shown_kind(mob))
         posed = local.copy()
 
         for name, indices, center in parts:

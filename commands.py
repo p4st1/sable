@@ -6,7 +6,9 @@
 """
 from typing import Callable, NamedTuple
 
-from chat import GRAY, RED
+import structures
+from chat import GRAY, RED, YELLOW
+from door import OPPOSITE
 from items import MAX_STACK, NAMES, item_name
 from storage import GAME_MODES
 
@@ -254,3 +256,100 @@ def list_players(game, args):
         names += [player.name for player in game.net.players.values() if player.joined]
 
     return [(f"There are {len(names)} players online: {', '.join(names)}", GRAY)]
+
+
+def block_text(cell):
+    """Клетка блока в координатах команд: y вверх, блок под ногами на единицу ниже ног."""
+    x, y, z = cell
+
+    return f"{x}, {-y - 1}, {z}"
+
+
+def looked_at(game):
+    """Блок под прицелом и пустая клетка перед ним."""
+    hit, before = game.world.raycast(game.camera.position, game.camera.forward(), game.reach)
+
+    if hit is None:
+        raise CommandError("Look at a block first")
+
+    return hit, before
+
+
+@command("structure", "/structure <pos1|pos2|save|place|list> [name]", "Save a building as a template, place it")
+def structure(game, args):
+    if not args:
+        raise UsageError
+
+    action = args[0].lower()
+
+    if game.survival and action != "list":
+        raise CommandError("Structures can be saved and placed only in Creative Mode")
+
+    if action in ("pos1", "pos2"):
+        if len(args) != 1:
+            raise UsageError
+
+        hit, _ = looked_at(game)
+        game.structure_corners[action] = hit
+
+        return [(f"Corner {action[-1]} set to {block_text(hit)}", GRAY)]
+
+    if action == "list":
+        found = structures.names()
+
+        if not found:
+            return [("No structures saved yet", GRAY)]
+
+        return [(f"Structures ({len(found)}): {', '.join(found)}", GRAY)]
+
+    if len(args) != 2:
+        raise UsageError
+
+    name = args[1].lower()
+
+    try:
+        structures.check_name(name)
+    except ValueError as error:
+        raise CommandError(str(error))
+
+    if action == "save":
+        corners = game.structure_corners
+
+        if "pos1" not in corners or "pos2" not in corners:
+            raise CommandError("Set both corners first: look at a block and type /structure pos1, then pos2")
+
+        # Игрок стоит перед входом и смотрит на постройку: лицо обращено к нему.
+        front = OPPOSITE[structures.side_of(game.camera.forward())]
+
+        try:
+            template = structures.capture(game.world, corners["pos1"], corners["pos2"], name, front)
+        except ValueError as error:
+            raise CommandError(str(error))
+
+        replaced = name in structures.names()
+        structures.save(template)
+        size_x, size_y, size_z = template.size
+
+        return [(
+            f"{'Replaced' if replaced else 'Saved'} structure '{name}' ({size_x}x{size_y}x{size_z}), entrance faces {front}",
+            YELLOW,
+        )]
+
+    if action == "place":
+        try:
+            template = structures.load(name)
+        except ValueError as error:
+            raise CommandError(str(error))
+
+        hit, _ = looked_at(game)
+        # Вход к игроку; нижний слой (пол) встаёт на место блока под прицелом.
+        side = OPPOSITE[structures.side_of(game.camera.forward())]
+        template = template.facing(side)
+        size_x, size_y, size_z = template.size
+        origin = (hit[0] - size_x // 2, hit[1] - (size_y - 1), hit[2] - size_z // 2)
+
+        game.place_structure(template, origin)
+
+        return [(f"Placed structure '{name}' at {block_text(hit)}, entrance faces {side}", GRAY)]
+
+    raise UsageError

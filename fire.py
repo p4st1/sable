@@ -26,6 +26,10 @@ FLAMMABLE = {
     "oak_log": (5, 5), "birch_log": (5, 5), "spruce_log": (5, 5),
     "oak_leaves": (30, 60), "birch_leaves": (30, 60), "spruce_leaves": (30, 60),
     "white_wool": (30, 60),
+    "oak_stairs": (5, 20), "oak_fence": (5, 20),
+    # Книжная полка горит, как листва.
+    "bookshelf": (30, 20),
+    "oak_slab": (5, 20), "double_oak_slab": (5, 20),
 }
 
 # На этом огонь не гаснет никогда.

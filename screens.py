@@ -14,7 +14,7 @@ import pygame
 
 from containers import FUEL, FUEL_SLOT, INPUT, OUTPUT, SMELT_TIME, SMELTING
 from crafting import find_recipe
-from gui import PANEL_TITLE
+from gui import PANEL, PANEL_DARK, PANEL_LIGHT, PANEL_TITLE, SLOT_DARK
 import armor
 from items import ALL_ITEMS, HOTBAR_SIZE, Stack, item_name, max_stack
 from textures import load_surface
@@ -136,6 +136,7 @@ def insert(slots, stack):
 
 class ContainerScreen:
     title = ""
+    width = WIDTH
     title_x = 8
     height = 166
     # Подпись "Inventory" и ячейки игрока: основной инвентарь и хотбар под ним.
@@ -187,7 +188,7 @@ class ContainerScreen:
     def corner(self):
         width, height = self.game.gui.units(self.game.screen)
 
-        return (width - WIDTH) // 2, (height - self.height) // 2
+        return (width - self.width) // 2, (height - self.height) // 2
 
     def slot_rect(self, slot):
         left, top = self.corner()
@@ -204,7 +205,7 @@ class ContainerScreen:
     def inside(self, position):
         left, top = self.corner()
 
-        return self.game.gui.to_pixels((left, top, WIDTH, self.height)).collidepoint(position)
+        return self.game.gui.to_pixels((left, top, self.width, self.height)).collidepoint(position)
 
     # Ввод.
 
@@ -457,7 +458,7 @@ class ContainerScreen:
         mouse = pygame.mouse.get_pos()
 
         gui.darken(screen, 110)
-        gui.draw_panel(screen, left, top, WIDTH, self.height)
+        gui.draw_panel(screen, left, top, self.width, self.height)
 
         if self.title:
             gui.draw_text(screen, self.title, (left + self.title_x, top + 6), PANEL_TITLE, 'topleft', shadow=False)
@@ -669,8 +670,21 @@ class FurnaceScreen(ContainerScreen):
         gui.draw_arrow(screen, left + 79, top + 34, furnace.progress / SMELT_TIME)
 
 
+# Полоса прокрутки палитры: справа от ячеек, ползунок как в оригинале 12 x 15.
+SCROLL_X = 7 + 9 * SLOT + 4
+SCROLL_WIDTH = 14
+THUMB_HEIGHT = 15
+# Сверху и снизу от окна остаётся хотя бы столько места.
+SCREEN_MARGIN = 8
+
+
 class CreativeScreen(ContainerScreen):
-    """Палитра творческого режима: бесконечные предметы сверху и хотбар снизу."""
+    """Палитра творческого режима: бесконечные предметы сверху и хотбар снизу.
+
+    Рядов видно столько, сколько помещается на экране. Если предметов больше,
+    справа полоса прокрутки: листают колесом мыши или ползунком. Где
+    остановились, игра помнит до следующего открытия.
+    """
     title = "Items"
     inventory_label = False
     discard_outside = True
@@ -678,11 +692,84 @@ class CreativeScreen(ContainerScreen):
     def __init__(self, game):
         super().__init__(game)
 
-        rows = max(3, math.ceil(len(ALL_ITEMS) / 9))
-        self.height = 17 + rows * SLOT + 4 + SLOT + 7
+        total_rows = max(1, math.ceil(len(ALL_ITEMS) / 9))
+        _, screen_height = game.gui.units(game.screen)
+        fixed = 17 + 4 + SLOT + 7
+        fit = max(3, (screen_height - fixed - 2 * SCREEN_MARGIN) // SLOT)
 
-        for index in range(rows * 9):
-            item = ALL_ITEMS[index] if index < len(ALL_ITEMS) else None
-            self.slots.append(SourceSlot(item, 7 + index % 9 * SLOT, 17 + index // 9 * SLOT))
+        self.rows = min(total_rows, fit)
+        self.max_scroll = total_rows - self.rows
+        self.scroll = min(getattr(game, "creative_scroll", 0), self.max_scroll)
+        self.dragging = False
+        self.height = 17 + self.rows * SLOT + 4 + SLOT + 7
 
-        self.add_player_slots(top=17 + rows * SLOT + 4, main=False)
+        if self.max_scroll:
+            self.width = SCROLL_X + SCROLL_WIDTH + 7
+
+        self.grid = [SourceSlot(None, 7 + index % 9 * SLOT, 17 + index // 9 * SLOT) for index in range(self.rows * 9)]
+        self.slots += self.grid
+        self.fill_grid()
+
+        self.add_player_slots(top=17 + self.rows * SLOT + 4, main=False)
+
+    def fill_grid(self):
+        for index, slot in enumerate(self.grid):
+            item_index = self.scroll * 9 + index
+            slot.item = ALL_ITEMS[item_index] if item_index < len(ALL_ITEMS) else None
+
+    def scroll_to(self, row):
+        self.scroll = max(0, min(self.max_scroll, row))
+        self.game.creative_scroll = self.scroll
+        self.fill_grid()
+
+    def wheel(self, rows):
+        """Колесо мыши: rows рядов вниз (отрицательное вверх)."""
+        self.scroll_to(self.scroll + rows)
+
+    def track_rect(self):
+        """Полоса прокрутки в единицах интерфейса."""
+        left, top = self.corner()
+
+        return left + SCROLL_X, top + 17, SCROLL_WIDTH, self.rows * SLOT
+
+    def drag_to(self, position):
+        """Ползунок за мышью: середина ползунка под курсором."""
+        x, y, width, height = self.track_rect()
+        mouse_y = position[1] / self.game.gui.scale
+        share = (mouse_y - y - THUMB_HEIGHT / 2) / max(1, height - THUMB_HEIGHT)
+        self.scroll_to(round(share * self.max_scroll))
+
+    def press(self, position, button, shift=False):
+        if self.max_scroll and button == 1 and self.game.gui.to_pixels(self.track_rect()).collidepoint(position):
+            self.dragging = True
+            self.drag_to(position)
+            return
+
+        super().press(position, button, shift)
+
+    def release(self, position):
+        self.dragging = False
+        super().release(position)
+
+    def motion(self, position):
+        if self.dragging:
+            self.drag_to(position)
+
+    def render_extras(self, screen, left, top):
+        if not self.max_scroll:
+            return
+
+        gui = self.game.gui
+        x, y, width, height = self.track_rect()
+
+        # Желоб утоплен, как ячейка.
+        gui.fill(screen, (x, y, width, height), PANEL_LIGHT)
+        gui.fill(screen, (x, y, width - 1, height - 1), SLOT_DARK)
+        gui.fill(screen, (x + 1, y + 1, width - 2, height - 2), (0, 0, 0))
+
+        # Ползунок выпуклый, как кнопка.
+        thumb_y = y + 1 + round((height - 2 - THUMB_HEIGHT) * self.scroll / self.max_scroll)
+        thumb = (x + 1, thumb_y, width - 2, THUMB_HEIGHT)
+        gui.fill(screen, thumb, PANEL_DARK)
+        gui.fill(screen, (thumb[0], thumb[1], thumb[2] - 1, thumb[3] - 1), PANEL_LIGHT)
+        gui.fill(screen, (thumb[0] + 1, thumb[1] + 1, thumb[2] - 2, thumb[3] - 2), PANEL)

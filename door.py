@@ -11,7 +11,6 @@ ITEM_TEXTURES = 'assets/minecraft/textures/item/'
 # Тип двери: (нижняя половина, верхняя половина, иконка предмета).
 DOORS = {
     "oak_door": ("oak_door_bottom.png", "oak_door_top.png", "oak_door.png"),
-    "spruce_door": ("spruce_door_bottom.png", "spruce_door_top.png", "spruce_door.png"),
 }
 
 THICKNESS = 3 / 16

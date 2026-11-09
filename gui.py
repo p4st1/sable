@@ -12,6 +12,7 @@ import numpy as np
 import pygame
 
 from block import Block
+import shapes
 from items import flat_texture, item_name, max_uses
 from textures import load_surface
 
@@ -188,8 +189,64 @@ LOGO_SIDE = (122, 98, 64)
 SPLASH_ANGLE = 20
 
 
+def make_shape_icon(block_type, size):
+    """Изометрическая иконка ступенек и забора: из каждого пикселя пускаем луч в коробки.
+
+    Проекция та же, что у кубика: верх ромбом в верхней половине, грань +z слева
+    (светлее), грань +x справа (темнее). Ось Y мира вниз.
+    """
+
+    sx, sy = np.meshgrid((np.arange(size) + 0.5) / size, (np.arange(size) + 0.5) / size, indexing='ij')
+    # Точка на луче: z = 0, экран x = 0.5 + (x - z) / 2, экран y = (x + z) / 4 + y / 2.
+    origin_x = 2 * (sx - 0.5)
+    origin_y = 2 * (sy - origin_x / 4)
+    origin = np.stack([origin_x, origin_y, np.zeros_like(sx)], axis=-1)
+    direction = np.array([-1.0, 1.0, -1.0])
+
+    nearest = np.full(sx.shape, np.inf)
+    hit_face = np.full(sx.shape, -1)
+
+    for low, high in shapes.icon_boxes(block_type):
+        low, high = np.array(low), np.array(high)
+        t1 = (low - origin) / direction
+        t2 = (high - origin) / direction
+        enter = np.minimum(t1, t2)
+        leave = np.maximum(t1, t2)
+        t_near = enter.max(axis=-1)
+        hit = (t_near <= leave.min(axis=-1)) & (t_near < nearest)
+        nearest[hit] = t_near[hit]
+        hit_face[hit] = enter.argmax(axis=-1)[hit]
+
+    icon = pygame.Surface((size, size), pygame.SRCALPHA)
+    colors = pygame.surfarray.pixels3d(icon)
+    alpha = pygame.surfarray.pixels_alpha(icon)
+    point = origin + nearest[..., None] * direction
+
+    # Грань по оси входа луча: x -> правая (+x), y -> верх, z -> левая (+z).
+    for axis, (u_axis, v_axis, flip_u, shade) in enumerate(((2, 1, True, 0.6), (0, 2, False, 1.0), (0, 1, False, 0.8))):
+        # У плит верх своей текстурой.
+        image = load_surface(shapes.texture(block_type, "top" if axis == 1 else "side"))
+        texture = pygame.surfarray.array3d(image)
+        width, height = texture.shape[:2]
+        inside = hit_face == axis
+        u = point[..., u_axis][inside] % 1.0
+        v = point[..., v_axis][inside] % 1.0
+        u = 1 - u if flip_u else u
+        texel_x = np.clip((u * width).astype(int), 0, width - 1)
+        texel_y = np.clip((v * height).astype(int), 0, height - 1)
+        colors[inside] = texture[texel_x, texel_y] * shade
+        alpha[inside] = 255
+
+    del colors, alpha
+
+    return icon
+
+
 def make_block_icon(block_type, size):
     """Рисует изометрический кубик: для каждого пикселя иконки ищет точку на грани."""
+    if shapes.is_shaped(block_type):
+        return make_shape_icon(block_type, size)
+
     block = Block(block_type)
 
     x, y = np.meshgrid(

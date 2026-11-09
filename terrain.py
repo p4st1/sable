@@ -55,7 +55,14 @@ def ids(*names):
 
 
 AIR = 0
-ROSE, DANDELION, LAVA = (type_id(name) for name in ("rose", "dandelion", "lava"))
+ROSE, DANDELION, LAVA, SUGAR_CANE = (type_id(name) for name in ("rose", "dandelion", "lava", "sugar_cane"))
+
+# Тростник у воды: доля подходящих клеток в кустах, размер квадрата куста,
+# доля квадратов с тростником и наибольшая высота.
+CANE_DENSITY = 0.35
+CANE_CLUMP = 6
+CANE_CLUMPS = 0.35
+CANE_MAX = 3
 
 # Ниже этого (наш y больше) дно пещер залито лавой: в оригинале это y < 10 над дном мира.
 CAVE_LAVA_Y = BEDROCK_Y - 9
@@ -432,6 +439,7 @@ class TerrainGenerator:
         self.add_ores(ids, chunk_x, chunk_z)
         self.plant_trees(ids, area, x, z, base_x, base_z)
         self.place_flowers(ids, area, inside, x[inside], z[inside])
+        self.place_sugar_cane(ids, x[inside], z[inside])
 
         return Chunk(chunk_x, chunk_z, ids)
 
@@ -678,6 +686,39 @@ class TerrainGenerator:
                 continue
 
             ids[i, row - 1, j] = ROSE if kind[i, j] < ROSE_SHARE else DANDELION
+
+    def place_sugar_cane(self, ids, x, z):
+        """Тростник кустами по берегам: на траве, земле и песке рядом с водой, до трёх блоков.
+
+        Вода сбоку ищется внутри чанка, поэтому у самой границы тростник не растёт.
+        """
+        filled = ids != AIR
+        top = np.argmax(filled, axis=1)
+        ground = np.take_along_axis(ids, top[:, None, :], axis=1)[:, 0, :]
+
+        roll = hash01(self.seed, 41, x, z)
+        clump = hash01(self.seed, 42, x // CANE_CLUMP, z // CANE_CLUMP)
+        tall = hash01(self.seed, 43, x, z)
+
+        candidate = np.isin(ground, (GRASS, DIRT, SAND)) & (top > 0) & (roll < CANE_DENSITY) & (clump < CANE_CLUMPS)
+
+        for i, j in zip(*np.nonzero(candidate)):
+            row = int(top[i, j])
+
+            if not (0 < i < SIZE - 1 and 0 < j < SIZE - 1) or row < CANE_MAX:
+                continue
+
+            if not any(ids[i + di, row, j + dj] == WATER for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                continue
+
+            # Как в оригинале: чаще низкий, иногда в три блока.
+            height = 1 + int(tall[i, j] * tall[i, j] * CANE_MAX)
+
+            for step in range(1, min(height, CANE_MAX) + 1):
+                if ids[i, row - step, j] != AIR:
+                    break
+
+                ids[i, row - step, j] = SUGAR_CANE
 
     # Деревья.
 

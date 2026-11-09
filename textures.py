@@ -21,6 +21,17 @@ def lava_frames():
 BLOCK_TEXTURES = 'assets/minecraft/textures/block/'
 GENERATED = "generated:"
 
+
+def portal_frames():
+    """Кадры портала: столбец квадратов в nether_portal.png, как у лавы."""
+    from portal import PORTAL_FRAMES
+
+    image = pygame.image.load(PORTAL_FRAMES)
+    image = image.convert_alpha() if pygame.display.get_surface() else image
+    size = image.get_width()
+
+    return [image.subsurface((0, index * size, size, size)).copy() for index in range(max(1, image.get_height() // size))]
+
 # Листва в файле серая: в оригинале её красят цветом биома. У берёзы и ели
 # цвет свой и от биома не зависит.
 FOLIAGE = (72, 181, 24)
@@ -119,6 +130,7 @@ GENERATORS = {
     BED_ICON: bed_icon,
     FIRE_TEXTURE: lambda: fire_frames()[0],
     GENERATED + "lava": lambda: lava_frames()[0],
+    GENERATED + "nether_portal": lambda: portal_frames()[0],
 }
 
 # Кожаная броня в паке серая: красим в коричневый, как некрашеная кожа в оригинале.

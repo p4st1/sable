@@ -167,7 +167,13 @@ def block_from_key(key):
     block_type, _, state = key.partition("|")
 
     if block_type in REMOVED:
-        return Block(REMOVED[block_type])
+        # Еловая дверь становится дубовой в том же положении.
+        replacement = REMOVED[block_type]
+
+        try:
+            return Block(replacement, decode_state(replacement, state) if state else None)
+        except ValueError:
+            return Block(replacement)
 
     if not is_known_type(block_type):
         raise ValueError(f"неизвестный тип блока '{block_type}'")
@@ -262,13 +268,24 @@ def clear_chunks(name):
         path.unlink()
 
 
-def save_world(world, player, name, display_name=None, generator=None, extra=None):
+def saved_dimension(name):
+    """Измерение, где игрок был при последнем сохранении: "overworld" или "nether"."""
+    try:
+        meta = json.loads((world_folder(name) / "world.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "overworld"
+
+    return "nether" if isinstance(meta, dict) and meta.get("dimension") == "nether" else "overworld"
+
+
+def save_world(world, player, name, display_name=None, generator=None, extra=None, chunks_name=None):
     """Записывает изменённые чанки и игрока. Возвращает число записанных чанков.
 
     extra: дополнительные поля world.json (режим игры, инвентарь, контейнеры).
+    chunks_name: папка чанков, если не та же, что у мира (у ада своя).
     """
     folder = world_folder(name)
-    chunks_folder = folder / "chunks"
+    chunks_folder = world_folder(chunks_name or name) / "chunks"
     chunks_folder.mkdir(parents=True, exist_ok=True)
 
     written = 0
