@@ -1,0 +1,106 @@
+{
+    "format": 1,
+    "name": "New World",
+    "generator": "block",
+    "camera": {
+        "position": [
+            -1.737532188558406,
+            -2.2942000000000013,
+            -1.668850134994411
+        ],
+        "rotation": [
+            -0.6660000000000004,
+            1.044,
+            0
+        ]
+    },
+    "flying": true,
+    "game_mode": "creative",
+    "health": 20,
+    "spawn": [
+        0.5,
+        -2.621,
+        0.5
+    ],
+    "inventory": [
+        [
+            "oak_planks",
+            1
+        ],
+        [
+            "oak_log",
+            1
+        ],
+        [
+            "stone",
+            1
+        ],
+        [
+            "cobblestone",
+            1
+        ],
+        [
+            "sand",
+            1
+        ],
+        [
+            "grass",
+            1
+        ],
+        [
+            "dirt",
+            1
+        ],
+        [
+            "netherrack",
+            1
+        ],
+        [
+            "bricks",
+            1
+        ],
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    ],
+    "armor": [
+        null,
+        null,
+        null,
+        null
+    ],
+    "containers": [],
+    "items": [],
+    "mobs": [],
+    "time": 368.98,
+    "bed": null,
+    "game_rules": {
+        "keepInventory": false
+    },
+    "spawned_chunks": [],
+    "players": {}
+}

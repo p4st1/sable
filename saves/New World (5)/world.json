@@ -1,0 +1,386 @@
+{
+    "format": 1,
+    "name": "New World",
+    "generator": "flat",
+    "camera": {
+        "position": [
+            21.820001594782866,
+            -1.621,
+            -21.878052184027595
+        ],
+        "rotation": [
+            -0.40134303427495677,
+            15.048000000000199,
+            0
+        ]
+    },
+    "flying": false,
+    "game_mode": "creative",
+    "health": 20,
+    "spawn": [
+        0.5,
+        -1.621,
+        0.5
+    ],
+    "inventory": [
+        [
+            "diamond_sword",
+            1
+        ],
+        [
+            "grass",
+            1
+        ],
+        [
+            "chest",
+            1
+        ],
+        [
+            "beef",
+            3
+        ],
+        [
+            "rotten_flesh",
+            1
+        ],
+        [
+            "white_wool",
+            1
+        ],
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+    ],
+    "armor": [
+        null,
+        null,
+        null,
+        null
+    ],
+    "time": 21570.26,
+    "bed": null,
+    "game_rules": {
+        "keepInventory": false
+    },
+    "players": {},
+    "portals": {},
+    "containers": [],
+    "items": [],
+    "mobs": [
+        {
+            "kind": "sheep",
+            "position": [
+                -1.9837,
+                -0.001,
+                18.9963
+            ],
+            "yaw": 1.3931,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -21.2617,
+                -0.001,
+                30.8513
+            ],
+            "yaw": 19.326,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                22.8488,
+                -0.001,
+                0.4749
+            ],
+            "yaw": 0.5163,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                22.5212,
+                -0.001,
+                30.694
+            ],
+            "yaw": 4.6207,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                5.4132,
+                -0.001,
+                31.2175
+            ],
+            "yaw": -25.7539,
+            "health": 8
+        },
+        {
+            "kind": "cow",
+            "position": [
+                -5.0556,
+                -0.001,
+                13.5293
+            ],
+            "yaw": 0.045,
+            "health": 10
+        },
+        {
+            "kind": "cow",
+            "position": [
+                -13.9354,
+                -0.001,
+                23.4456
+            ],
+            "yaw": 19.5531,
+            "health": 10
+        },
+        {
+            "kind": "cow",
+            "position": [
+                22.6067,
+                -0.001,
+                12.0583
+            ],
+            "yaw": -11.042,
+            "health": 10
+        },
+        {
+            "kind": "cow",
+            "position": [
+                18.9781,
+                -0.001,
+                30.6866
+            ],
+            "yaw": 6.4868,
+            "health": 10
+        },
+        {
+            "kind": "cow",
+            "position": [
+                16.8413,
+                -0.001,
+                14.7463
+            ],
+            "yaw": -6.2064,
+            "health": 10
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                30.2573,
+                -0.001,
+                -6.4865
+            ],
+            "yaw": 19.6713,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                7.4015,
+                -0.001,
+                16.477
+            ],
+            "yaw": -2.6623,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -19.4444,
+                -0.001,
+                16.2658
+            ],
+            "yaw": 31.0741,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -31.0858,
+                -0.001,
+                18.9669
+            ],
+            "yaw": 5.6756,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                -28.6262,
+                -0.001,
+                3.7532
+            ],
+            "yaw": -8.0307,
+            "health": 8
+        },
+        {
+            "kind": "sheep",
+            "position": [
+                21.9141,
+                -0.001,
+                -8.6856
+            ],
+            "yaw": 13.5371,
+            "health": 8
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                23.803,
+                -0.001,
+                -27.9737
+            ],
+            "yaw": -4.4492,
+            "health": 20
+        },
+        {
+            "kind": "spider",
+            "position": [
+                31.0468,
+                -0.001,
+                -10.3945
+            ],
+            "yaw": 4.0106,
+            "health": 16
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                22.9231,
+                -0.001,
+                -14.9052
+            ],
+            "yaw": -0.3423,
+            "health": 20
+        },
+        {
+            "kind": "spider",
+            "position": [
+                13.809,
+                -0.001,
+                -1.3802
+            ],
+            "yaw": -6.5735,
+            "health": 16
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                10.7569,
+                -0.001,
+                -19.2066
+            ],
+            "yaw": -15.2937,
+            "health": 20
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                29.0843,
+                -0.001,
+                -10.4267
+            ],
+            "yaw": 16.1581,
+            "health": 20
+        },
+        {
+            "kind": "spider",
+            "position": [
+                7.646,
+                -0.001,
+                0.8232
+            ],
+            "yaw": 5.936,
+            "health": 16
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                -1.5249,
+                -0.001,
+                -30.1261
+            ],
+            "yaw": -0.258,
+            "health": 20
+        },
+        {
+            "kind": "skeleton",
+            "position": [
+                14.0318,
+                -0.001,
+                -5.6136
+            ],
+            "yaw": 14.0588,
+            "health": 20
+        },
+        {
+            "kind": "zombie",
+            "position": [
+                -8.631,
+                -0.001,
+                -15.3661
+            ],
+            "yaw": 3.9599,
+            "health": 20
+        }
+    ],
+    "spawned_chunks": [
+        [
+            -2,
+            1
+        ],
+        [
+            -1,
+            1
+        ],
+        [
+            0,
+            -1
+        ],
+        [
+            0,
+            1
+        ],
+        [
+            1,
+            -2
+        ],
+        [
+            1,
+            -1
+        ]
+    ],
+    "nether": {},
+    "dimension": "overworld"
+}
